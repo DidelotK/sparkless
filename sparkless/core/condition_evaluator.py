@@ -9,6 +9,19 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 from ..functions.base import Column, ColumnOperation
 from ..spark_types import get_row_value
+from .math_utils import spark_round
+
+
+def _round_scale(operation: Any) -> int:
+    """Extract the scale argument of a round() operation.
+
+    ``F.round(col, 2)`` stores the 2 on the operation's ``value``. Anything
+    else (a missing scale, or a non-integer) means zero decimal places.
+    """
+    scale = getattr(operation, "value", 0)
+    if isinstance(scale, bool) or not isinstance(scale, int):
+        return 0
+    return scale
 
 logger = logging.getLogger(__name__)
 
@@ -552,7 +565,9 @@ class ConditionEvaluator:
         elif operation_type == "abs":
             return abs(float(col_value)) if col_value is not None else None
         elif operation_type == "round":
-            return round(float(col_value)) if col_value is not None else None
+            # The scale lives on the operation; dropping it rounded every
+            # round(x, n) to zero decimal places.
+            return spark_round(col_value, _round_scale(operation))
         elif operation_type == "ceil":
             import math
 
@@ -1556,7 +1571,9 @@ class ConditionEvaluator:
             # For other functions, delegate to the existing function evaluation
             # operation_type is guaranteed to be a string in ColumnOperation
             op_str: str = cast("str", operation_type)
-            return ConditionEvaluator._evaluate_function_operation(col_value, op_str)
+            return ConditionEvaluator._evaluate_function_operation(
+                col_value, op_str, _round_scale(operation)
+            )
 
     @staticmethod
     def _evaluate_comparison_operation(
@@ -1879,7 +1896,9 @@ class ConditionEvaluator:
         return False
 
     @staticmethod
-    def _evaluate_function_operation(value: Any, operation_type: str) -> Any:
+    def _evaluate_function_operation(
+        value: Any, operation_type: str, scale: int = 0
+    ) -> Any:
         """Evaluate function operations like md5, sha1, crc32, etc.
 
         Args:
@@ -1921,7 +1940,7 @@ class ConditionEvaluator:
         elif operation_type == "abs":
             return abs(float(value)) if value is not None else None
         elif operation_type == "round":
-            return round(float(value)) if value is not None else None
+            return spark_round(value, scale)
         elif operation_type == "log10":
             import math
 
