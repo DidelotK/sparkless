@@ -2,13 +2,72 @@
 
 This file tracks bugs and issues discovered during test refactoring and development.
 
-**Last Updated**: 2025-01-15  
+**Last Updated**: 2026-07-20  
 **Context**: Unified PySpark Parity Testing Refactor  
-**Total Bugs Logged**: 22
+**Total Bugs Logged**: 23
 
 ---
 
 ## Critical Issues
+
+### BUG-023: Boolean columns evaluated as presence checks, breaking three-valued logic
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-20
+**File**: `sparkless/core/condition_evaluator.py`
+
+**Description**:
+`ConditionEvaluator.evaluate_condition()` evaluated a bare `Column` predicate as
+`get_row_value(row, column.name) is not None` - a *presence* check rather than the
+stored boolean value. Consequently `~F.col("flag")` meant "flag IS NULL", and
+`filter(~col)` returned the NULL rows while dropping the explicitly-false ones: a
+precise inversion of the correct result. `col == F.lit(False)` was unaffected, so the
+two idioms silently disagreed.
+
+Separately, the three logical connectives used Python's `not` / `and` / `or`, which do
+not implement SQL three-valued (Kleene) logic:
+`not None` is `True` (should be NULL), `None and False` is `None` (should be FALSE),
+and `None or False` is `False` (should be NULL).
+
+**Reproduction**:
+```python
+df = spark.createDataFrame(
+    [("v-active", True), ("v-inactive", False), ("v-unknown", None)],
+    StructType([StructField("vid", StringType()), StructField("flag", BooleanType())]),
+)
+df.filter(~F.col("flag")).collect()  # -> ['v-unknown']; PySpark returns ['v-inactive']
+df.filter(F.col("flag")).collect()   # -> ['v-active','v-inactive']; PySpark: ['v-active']
+```
+
+**Reference behaviour**:
+Captured from real PySpark 4.0.0 (Java 21, the DBR 17.3 runtime) and re-confirmed on
+PySpark 3.5.3 (Java 17). `NOT TRUE = FALSE`, `NOT FALSE = TRUE`, `NOT NULL = NULL`;
+`NULL AND FALSE = FALSE`; `NULL OR TRUE = TRUE`; a NULL predicate filters the row out.
+
+**Impact**:
+- Any `~F.col(bool_col)` predicate returned the complement of the correct rows whenever
+  the column was nullable - silently, with no error.
+- Downstream test suites that use sparkless as their unit-test engine would validate
+  inverted production behaviour as correct. This was found when an eligibility gate
+  written as `col == F.lit(False)` was proposed for replacement by the idiomatic
+  `~F.col(...)`; under the old semantics the two selected disjoint row sets.
+- Comparison-shaped operands (`~(F.col("n") == 1)`, `(a > 0) & (b < 3)`) were already
+  correct - only *bare boolean columns* were affected, which is why it went unnoticed.
+
+**Fix**:
+- `evaluate_condition()` returns the stored boolean for boolean columns and `None`
+  (SQL NULL) for NULL values; non-boolean non-null columns keep the previous truthy
+  behaviour.
+- Added `_kleene_not` / `_kleene_and` / `_kleene_or` helpers and routed both copies of
+  the logical-operator block (`_evaluate_logical_operation` and the duplicate inside
+  `_evaluate_column_operation`) through them.
+
+**Regression tests**:
+`tests/unit/functions/test_boolean_three_valued_logic.py` - full NOT/AND/OR truth
+tables plus filter semantics. The file is backend-agnostic and passes against real
+PySpark via `SPARKLESS_TEST_BACKEND=pyspark`.
+
+---
 
 ### BUG-001: GroupedData.count() returns AggregateFunction instead of ColumnOperation
 **Status**: Open  
