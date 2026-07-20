@@ -1202,3 +1202,159 @@ three sites were wrongly using -- is precisely the correct semantics for
 
 **Regression tests**: `tests/unit/functions/test_round_scale_argument.py`
 (17 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
+---
+
+## Open findings from the same sweep (not yet fixed)
+
+Reproduced against **PySpark 4.0.0** on OpenJDK 21. Each is documented with the
+divergence, the mechanism, and a proposed fix. They were left out of the fixes
+above to keep each change to a single concern.
+
+Symptoms below were reproduced directly. The `file:line` mechanisms come from a
+follow-up code trace and should be spot-checked before relying on them.
+
+---
+
+### BUG-026: A scalar function wrapping an aggregate returns NULL
+**Status**: Open
+**Severity**: High
+**File**: `sparkless/dataframe/grouped/base.py`
+
+```python
+df.groupBy("grp").agg(F.sqrt(F.sum("x")).alias("r"))     # PySpark 7.745966692414834 -> Sparkless None
+df.groupBy("grp").agg(F.round(F.sum("x") / 3, 2).alias("r"))  # PySpark 20.0 -> Sparkless None
+df.groupBy("grp").agg(F.abs(F.sum("x")).alias("r"))      # PySpark 60.0 -> Sparkless None
+```
+
+Plain scalar functions are fine (`F.sqrt(F.lit(16.0))` -> `4.0`) and arithmetic
+on an aggregate is fine (`F.sum("x") / 3` -> `20.0`). Only a *named function*
+wrapping an aggregate fails.
+
+**Mechanism**: in `_evaluate_column_expression` the inner aggregate *is*
+resolved, but every downstream branch is gated on an arithmetic-only operation
+set (`"+" "-" "*" "/" "%"`), so `sqrt`/`round`/`abs` match nothing, fall past
+the `elif` chain and hit a literal `return expr_name, None`. The NULL is the
+default of an unmatched dispatch, not a computed value.
+
+**Proposed fix**: when a child aggregate has been resolved, evaluate it to a
+scalar and then apply the outer operation by delegating to the existing scalar
+evaluator (rebuild a one-row dict keyed by the child's name), rather than
+enumerating `sqrt`/`round`/`abs`/... by hand. Add the branch strictly *before*
+the existing `return ..., None` so no currently-working path changes.
+
+---
+
+### BUG-027: Most aggregate functions over a window return NULL
+**Status**: Open
+**Severity**: High
+**File**: `sparkless/functions/window_execution.py`
+
+`max`, `min`, `collect_set`, `collect_list` and `stddev` over
+`Window.partitionBy(...)` return `None` -- **even for a plain column**, with no
+expression involved:
+
+```python
+df.withColumn("m", F.max("x").over(Window.partitionBy("grp")))  # PySpark 20.0 -> Sparkless None
+```
+
+**Mechanism**: `WindowFunction.evaluate()` dispatches on `function_name` through
+an `elif` chain covering `row_number, rank, dense_rank, lag, lead, nth_value,
+ntile, cume_dist, percent_rank, first, last, first_value, last_value, sum, avg,
+approx_count_distinct, count`. Everything else falls into
+`else: return [None] * len(data)`.
+
+`max`/`min` silently returning NULL over a window is arguably more dangerous
+than the originally-reported `collect_set` case.
+
+**Proposed fix**: purely additive -- it only claims `function_name`s that
+currently return all-NULL. Best shape is a `{name: reducer}` table plus one
+generic partition-aggregation helper, reusing the frame handling that `sum`
+already implements correctly.
+
+---
+
+### BUG-028: array_except and array_intersect are not implemented
+**Status**: Open
+**Severity**: Medium
+**File**: `sparkless/core/condition_evaluator.py`
+
+```python
+F.array_except(F.col("doms"), F.array(F.col("domain")))  # PySpark ['d2'] -> Sparkless None
+```
+
+**Mechanism**: neither function has an evaluator branch anywhere. The
+constructor and the re-export exist, so the call builds fine and then matches
+no `operation_type`, hitting the default `return None`.
+
+Note this is **not** an argument-passing problem: it returns NULL even with a
+pure-literal second argument. That distinguishes it from BUG-029, which it
+superficially resembles.
+
+**Proposed fix**: add both names to the function-op whitelist and implement
+them next to the existing `array_union`, mirroring its handling of unhashable
+elements. `array_except` dedupes its result.
+
+---
+
+### BUG-029: array_remove and array_position do not resolve a Column argument
+**Status**: Open
+**Severity**: High
+**File**: `sparkless/core/condition_evaluator.py`
+
+```python
+F.array_remove(F.col("doms"), F.col("domain"))   # PySpark ['d2'] -> Sparkless ['d1','d2'] (unchanged)
+```
+
+**Mechanism**: the branch uses `operation.value` raw, without resolving it
+against the row:
+
+```python
+remove_value = operation.value          # still a Column
+return [x for x in col_value if x != remove_value]
+```
+
+`x != <Column>` invokes `Column.__ne__`, which returns a **truthy
+ColumnOperation rather than a bool**, so every element passes the filter and
+the array comes back unchanged. With a literal second argument it works
+correctly. The neighbouring `array_contains` and `array_union` both call
+`_get_column_value(row, operation.value)` first; these two are the outliers.
+
+**`array_position` has the same defect and is worse**: `list.index()` uses
+`==`, and `Column.__eq__` is likewise truthy, so it matches index 0
+unconditionally -- returning a *plausible wrong number* rather than an
+obviously-unchanged array. Verified: `array_position(["d1","d2"], col("domain"))`
+with `domain="d2"` returns `1` (should be `2`), and with a literal that is
+absent returns `1` (should be `0`).
+
+**Proposed fix**: one line each -- resolve through `_get_column_value` before
+comparing, gating on `hasattr(operation.value, "name")` as `array_contains`
+does so bare strings stay literal.
+
+---
+
+### BUG-030: F.bround is not implemented
+**Status**: Open
+**Severity**: Low
+**File**: `sparkless/core/condition_evaluator.py`
+
+`F.bround(F.lit(2.5))` returns `None`; PySpark returns `2.0`.
+
+`bround` is round-half-to-**even**, which is precisely what Python's built-in
+`round` does -- the semantics that BUG-025 removed from `round`, where they were
+wrong. Implementing `bround` is therefore the mirror of that fix.
+
+---
+
+### Cross-cutting observation
+
+BUG-026, BUG-027, BUG-028 and the now-fixed BUG-024 are four instances of one
+*failure design* rather than one code path: a hardcoded dispatch table whose
+unmatched case falls through to a silent `None` (or `0`). An unhandled
+expression is then indistinguishable from a genuine SQL NULL, so the library
+reports a plausible wrong answer instead of "not supported".
+
+The single highest-leverage change is not any individual fix but making those
+fall-through cases *loud* -- raising, or at minimum warning, when a dispatch
+misses. Every bug in this batch was found downstream by pinning exact expected
+values; none would have been caught by an assertion of shape or non-nullness.
