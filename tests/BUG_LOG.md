@@ -2,13 +2,72 @@
 
 This file tracks bugs and issues discovered during test refactoring and development.
 
-**Last Updated**: 2025-01-15  
+**Last Updated**: 2026-07-20  
 **Context**: Unified PySpark Parity Testing Refactor  
-**Total Bugs Logged**: 22
+**Total Bugs Logged**: 23
 
 ---
 
 ## Critical Issues
+
+### BUG-023: Boolean columns evaluated as presence checks, breaking three-valued logic
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-20
+**File**: `sparkless/core/condition_evaluator.py`
+
+**Description**:
+`ConditionEvaluator.evaluate_condition()` evaluated a bare `Column` predicate as
+`get_row_value(row, column.name) is not None` — a *presence* check rather than the
+stored boolean value. Consequently `~F.col("flag")` meant "flag IS NULL", and
+`filter(~col)` returned the NULL rows while dropping the explicitly-false ones: a
+precise inversion of the correct result. `col == F.lit(False)` was unaffected, so the
+two idioms silently disagreed.
+
+Separately, the three logical connectives used Python's `not` / `and` / `or`, which do
+not implement SQL three-valued (Kleene) logic:
+`not None` is `True` (should be NULL), `None and False` is `None` (should be FALSE),
+and `None or False` is `False` (should be NULL).
+
+**Reproduction**:
+```python
+df = spark.createDataFrame(
+    [("v-active", True), ("v-inactive", False), ("v-unknown", None)],
+    StructType([StructField("vid", StringType()), StructField("flag", BooleanType())]),
+)
+df.filter(~F.col("flag")).collect()  # -> ['v-unknown']; PySpark returns ['v-inactive']
+df.filter(F.col("flag")).collect()   # -> ['v-active','v-inactive']; PySpark: ['v-active']
+```
+
+**Reference behaviour**:
+Captured from real PySpark 4.0.0 (Java 21, the DBR 17.3 runtime) and re-confirmed on
+PySpark 3.5.3 (Java 17). `NOT TRUE = FALSE`, `NOT FALSE = TRUE`, `NOT NULL = NULL`;
+`NULL AND FALSE = FALSE`; `NULL OR TRUE = TRUE`; a NULL predicate filters the row out.
+
+**Impact**:
+- Any `~F.col(bool_col)` predicate returned the complement of the correct rows whenever
+  the column was nullable — silently, with no error.
+- Downstream test suites that use sparkless as their unit-test engine would validate
+  inverted production behaviour as correct. This was found when an eligibility gate
+  written as `col == F.lit(False)` was proposed for replacement by the idiomatic
+  `~F.col(...)`; under the old semantics the two selected disjoint row sets.
+- Comparison-shaped operands (`~(F.col("n") == 1)`, `(a > 0) & (b < 3)`) were already
+  correct — only *bare boolean columns* were affected, which is why it went unnoticed.
+
+**Fix**:
+- `evaluate_condition()` returns the stored boolean for boolean columns and `None`
+  (SQL NULL) for NULL values; non-boolean non-null columns keep the previous truthy
+  behaviour.
+- Added `_kleene_not` / `_kleene_and` / `_kleene_or` helpers and routed both copies of
+  the logical-operator block (`_evaluate_logical_operation` and the duplicate inside
+  `_evaluate_column_operation`) through them.
+
+**Regression tests**:
+`tests/unit/functions/test_boolean_three_valued_logic.py` — full NOT/AND/OR truth
+tables plus filter semantics. The file is backend-agnostic and passes against real
+PySpark via `SPARKLESS_TEST_BACKEND=pyspark`.
+
+---
 
 ### BUG-001: GroupedData.count() returns AggregateFunction instead of ColumnOperation
 **Status**: Open  
@@ -929,3 +988,74 @@ The strict validation in `GroupedData.agg()` raises errors for `AggregateFunctio
 
 **Top 5 bugs would fix 25 test failures (47% of all failures)**
 
+
+---
+
+## 2026-07 PySpark 4.0.0 Compatibility Findings
+
+**Context**: Divergences found while running a large downstream unit-test suite
+(~24k tests) on Sparkless. Every bug in this batch is **silent** -- none raises,
+each returns a plausible-but-wrong value, so assertions of the form
+"not NULL" / "> 0" / "ranks are 1..n" keep passing while the number is wrong.
+
+**Reference engine**: PySpark **4.0.0** on OpenJDK 21 (the Databricks Runtime
+17.3 pairing). Every expected value below was produced by executing the
+reproduction against real PySpark, not derived from the API docs.
+
+---
+
+### BUG-023: Window.orderBy applies one global sort direction to all keys
+**Status**: Fixed
+**Severity**: High
+**Discovered**: 2026-07-20
+**File**: `sparkless/functions/window_execution.py`, `sparkless/dataframe/window_handler.py`
+
+**Description**:
+`Window.orderBy` computed a single `reverse` flag as `any(key is desc)` and
+performed one `sorted()` call with it. Spark applies the direction **per key**,
+so `ORDER BY a DESC, b ASC` must sort `b` ascending within ties on `a`. With the
+global flag, any `desc` key reversed *every* key -- the trailing `asc` tie-break
+came out backwards.
+
+**Reproduction**:
+```python
+df = spark.createDataFrame(
+    [("g", 1, 5.0, "z"), ("g", 1, 5.0, "a"), ("g", 2, 5.0, "m")],
+    ["grp", "prio", "score", "name"],
+)
+w = Window.partitionBy("grp").orderBy(F.col("score").desc(), F.col("name").asc())
+df.withColumn("rn", F.row_number().over(w)).collect()
+```
+
+**Expected (PySpark 4.0.0)**: `a, m, z` (all scores tie, so `name` ascending decides)
+**Actual (Sparkless)**: `z, m, a` -- exactly `name` *descending*
+
+**Confirmed**: 2026-07-20 against PySpark 4.0.0. Also reproduced with three keys
+(`desc, desc, asc` -> expected `m, a, z`, got `m, z, a`) and with an undecorated
+trailing key (`orderBy(desc(score), col(name))`), which must default to ascending.
+
+**Impact**:
+- Silent. `row_number()` still yields 1..n and `rank()` still looks dense, so the
+  shape of the result is right and only the order is wrong.
+- Makes any deterministic tie-break unprovable: a downstream project had to mark
+  its ordering test `requires_real_spark` because the harness could not reproduce
+  the final sort key.
+- `lag`/`lead`/`first`/`last` over a mixed-direction window read the wrong
+  neighbouring row.
+- All-ascending and all-descending windows were unaffected, which is why this
+  survived: the existing mixed-direction test (`test_mixed_order_asc_desc`) uses
+  `orderBy(asc(grp), desc(val))` while partitioned by `grp`, so the `asc` key is
+  constant within each partition and the global reverse happens to be correct.
+
+**Fix**:
+Added `sort_indices_multi_key()` to `sparkless/spark_types.py`, which performs
+the standard stable multi-key sort (least-significant key first, one pass per
+key, each with its own `reverse`). Both order-by implementations now build a
+`(is_desc, nulls_last)` pair per key and delegate to it.
+
+Nulls are now ordered with a rank sentinel instead of by substituting
+`+/-inf`, which additionally fixes a `TypeError` when ordering a nullable
+**string** column (`str` vs `float` comparison).
+
+**Regression tests**: `tests/unit/dataframe/test_window_orderby_per_key_direction.py`
+(12 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
