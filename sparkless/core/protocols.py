@@ -73,6 +73,28 @@ class CaseWhenLike(Protocol):
         ...
 
 
+def is_row_evaluatable_expression(column: Any) -> bool:
+    """Whether an aggregate/window target must be computed per row.
+
+    ``F.sum(F.col("x"))`` targets a plain column and can be read straight out
+    of each row by name. ``F.sum(F.col("x") * 2)`` and
+    ``F.sum(F.when(cond, x))`` target an *expression* that has to be evaluated
+    for every row first -- there is no column of that name to look up.
+
+    ``ColumnOperation`` advertises itself with ``.operation``, but ``CaseWhen``
+    does not: it is identified by its ``conditions``/``default_value`` pair
+    (see :class:`CaseWhenLike`). Gating only on ``.operation`` sent every
+    CASE WHEN down the plain-column path, where the lookup of a column
+    literally named ``"CASE WHEN"`` missed on every row and the aggregate
+    collapsed to its empty default -- a constant ``0`` for ``sum``.
+    """
+    if column is None:
+        return False
+    if hasattr(column, "operation"):
+        return True
+    return hasattr(column, "conditions") and hasattr(column, "default_value")
+
+
 @runtime_checkable
 class DataFrameLike(Protocol):
     """Protocol for DataFrame-like objects."""

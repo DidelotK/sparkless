@@ -23,6 +23,7 @@ from ...core.type_utils import (
 )
 
 from ...spark_types import get_row_value
+from ...core.protocols import is_row_evaluatable_expression
 from ..protocols import SupportsDataFrameOps
 
 if TYPE_CHECKING:
@@ -719,7 +720,7 @@ class GroupedData:
                 for row in group_rows
                 if get_row_value(row, col_name) is not None
             ]
-            return expr, sum(values) if values else 0
+            return expr, sum(values) if values else None
         elif expr.startswith("avg("):
             col_name = expr[4:-1]
             # Validate column exists using ValidationHandler
@@ -787,7 +788,7 @@ class GroupedData:
 
         if func_name == "sum":
             # If the aggregate targets an expression (e.g., cast or arithmetic), evaluate per-row
-            if hasattr(expr, "column") and hasattr(expr.column, "operation"):
+            if hasattr(expr, "column") and is_row_evaluatable_expression(expr.column):
                 values = []
                 for row_data in group_rows:
                     try:
@@ -810,7 +811,7 @@ class GroupedData:
                     except (ValueError, TypeError, AttributeError):
                         pass
                 result_key = alias_name if alias_name else f"sum({col_name})"
-                return result_key, sum(values) if values else 0
+                return result_key, sum(values) if values else None
             # Simple column: validate and sum (case-insensitive)
             if col_name and not any(
                 op in col_name
@@ -856,10 +857,10 @@ class GroupedData:
                             continue
                     values.append(val)
             result_key = alias_name if alias_name else f"sum({col_name})"
-            return result_key, sum(values) if values else 0
+            return result_key, sum(values) if values else None
         elif func_name == "avg":
             # Expression-aware avg
-            if hasattr(expr, "column") and hasattr(expr.column, "operation"):
+            if hasattr(expr, "column") and is_row_evaluatable_expression(expr.column):
                 values = []
                 for row_data in group_rows:
                     try:
@@ -939,7 +940,7 @@ class GroupedData:
                 return result_key, len(group_rows)
         elif func_name == "max":
             # Check if this is a complex expression (ColumnOperation)
-            if hasattr(expr, "column") and hasattr(expr.column, "operation"):
+            if hasattr(expr, "column") and is_row_evaluatable_expression(expr.column):
                 # Evaluate the expression for each row
                 values = []
                 for row_data in group_rows:
@@ -966,7 +967,7 @@ class GroupedData:
                 return result_key, max(values) if values else None
         elif func_name == "min":
             # Check if this is a complex expression (ColumnOperation)
-            if hasattr(expr, "column") and hasattr(expr.column, "operation"):
+            if hasattr(expr, "column") and is_row_evaluatable_expression(expr.column):
                 # Evaluate the expression for each row
                 values = []
                 for row_data in group_rows:
@@ -1086,7 +1087,7 @@ class GroupedData:
                         seen.add(val)
                         values.append(val)
             result_key = alias_name if alias_name else f"sum_distinct({col_name})"
-            return result_key, sum(values) if values else 0
+            return result_key, sum(values) if values else None
         elif func_name == "variance":
             values = [
                 get_row_value(row, col_name)
@@ -1850,7 +1851,7 @@ class GroupedData:
                     for row in group_rows
                     if get_row_value(row, col_name) is not None
                 ]
-                return expr.name, sum(values) if values else 0
+                return expr.name, sum(values) if values else None
             elif operation == "avg":
                 col_name = (
                     expr.column.name
@@ -1897,7 +1898,7 @@ class GroupedData:
                 for row in group_rows
                 if get_row_value(row, col_name) is not None
             ]
-            return expr_name, sum(values) if values else 0
+            return expr_name, sum(values) if values else None
         elif expr_name.startswith("avg("):
             col_name = expr_name[4:-1]
             values = [

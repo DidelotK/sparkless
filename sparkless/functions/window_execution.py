@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING, Tuple
 import contextlib
 import sys
 
+from sparkless.core.protocols import is_row_evaluatable_expression
 from sparkless.spark_types import get_row_value, sort_indices_multi_key
 
 if TYPE_CHECKING:
@@ -83,6 +84,13 @@ class WindowFunction:
 
         # Add column property for compatibility with query executor
         self.column = getattr(function, "column", None)
+
+        # The expression this window function aggregates over, when it is not a
+        # plain column reference. `column_name` only carries the *rendered text*
+        # of such an expression ("(x * 2)", "CASE WHEN"), which no row contains.
+        agg_function = getattr(function, "_aggregate_function", None)
+        target_source = agg_function if agg_function is not None else function
+        self._target_expression = getattr(target_source, "column", None)
 
     def _generate_name(self) -> str:
         """Generate a name for this window function."""
@@ -378,6 +386,47 @@ class WindowFunction:
             self, "eqNullSafe", other, name=f"({self.name} <=> {other})"
         )
 
+    #: Synthetic column holding a pre-computed expression target.
+    _EXPR_TARGET_COLUMN = "__sparkless_window_expr_target__"
+
+    def _with_materialized_target(
+        self, data: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Pre-compute an expression target into a synthetic column.
+
+        Every per-row evaluator addresses its input *by name*, via
+        ``get_row_value(row, self.column_name)``. That is fine for
+        ``F.sum("x")``, but ``F.sum(F.col("x") * 2)`` and
+        ``F.sum(F.when(cond, x))`` have no column of that name: ``column_name``
+        holds only the rendered expression text, so the lookup missed on every
+        row and the aggregate silently collapsed to its empty default -- a
+        constant ``0`` for ``sum``, ``None`` for ``avg``/``max``/``min``.
+
+        Evaluating the expression once per row into a synthetic column lets all
+        the existing evaluators keep working unchanged. Rows are copied, so the
+        caller's data is not mutated.
+        """
+        target = self._target_expression
+        if not is_row_evaluatable_expression(target):
+            return data
+
+        from ..dataframe.evaluation.expression_evaluator import ExpressionEvaluator
+
+        evaluator = ExpressionEvaluator(full_data=data)
+        materialized = []
+        for index, row in enumerate(data):
+            new_row = dict(row)
+            try:
+                new_row[self._EXPR_TARGET_COLUMN] = evaluator.evaluate_expression(
+                    row, target, row_index=index
+                )
+            except (ValueError, TypeError, AttributeError, KeyError):
+                new_row[self._EXPR_TARGET_COLUMN] = None
+            materialized.append(new_row)
+
+        self.column_name = self._EXPR_TARGET_COLUMN
+        return materialized
+
     def evaluate(self, data: List[Dict[str, Any]]) -> List[Any]:
         """Evaluate the window function over the data.
 
@@ -387,6 +436,8 @@ class WindowFunction:
         Returns:
             List of window function results.
         """
+        data = self._with_materialized_target(data)
+
         if self.function_name == "row_number":
             return self._evaluate_row_number(data)
         elif self.function_name == "rank":
@@ -1178,6 +1229,9 @@ class WindowFunction:
             ):
                 # Cumulative sum (running total) - sum from start to current row
                 cumulative_sum = 0.0
+                # Spark's SUM is NULL until at least one non-NULL value is seen;
+                # a running total that has consumed only NULLs is not 0.
+                seen_value = False
                 # Map sorted indices back to original indices
                 # sorted_indices contains the indices in sorted order
                 # partition_indices contains the original indices
@@ -1187,24 +1241,28 @@ class WindowFunction:
                     if col_name in row and row[col_name] is not None:
                         with contextlib.suppress(ValueError, TypeError):
                             cumulative_sum += float(row[col_name])
+                            seen_value = True
                     # Find the original index position for this sorted index
                     # sorted_indices[sorted_pos] = sorted_idx, and we need to find where sorted_idx is in partition_indices
                     original_idx = (
                         sorted_idx  # sorted_idx is already the original index from data
                     )
-                    results[original_idx] = cumulative_sum
+                    results[original_idx] = cumulative_sum if seen_value else None
             else:
                 # Calculate sum for entire partition (default behavior)
                 partition_sum = 0.0
+                seen_value = False
                 for idx in sorted_indices:
                     row = data[idx]
                     if col_name in row and row[col_name] is not None:
                         with contextlib.suppress(ValueError, TypeError):
                             partition_sum += float(row[col_name])
+                            seen_value = True
 
-                # Assign same sum to all rows in partition
+                # Assign same sum to all rows in partition. Spark returns NULL,
+                # not 0, when a partition has no non-NULL value to add up.
                 for idx in partition_indices:
-                    results[idx] = partition_sum
+                    results[idx] = partition_sum if seen_value else None
 
         return results
 
