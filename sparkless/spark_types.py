@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Dict,
     Iterator,
     List,
@@ -737,6 +738,61 @@ def create_schema_from_columns(columns: List[str]) -> StructType:
     """Create schema from column names (all StringType)."""
     fields = [StructField(name=col, dataType=StringType()) for col in columns]
     return StructType(fields)
+
+
+def sort_indices_multi_key(
+    indices: List[int],
+    key_funcs: List[Callable[[int], Any]],
+    directions: List[Tuple[bool, bool]],
+) -> List[int]:
+    """Sort indices by several order keys, each with its own direction.
+
+    PySpark applies the sort direction *per key*: ``ORDER BY a DESC, b ASC``
+    sorts ``a`` descending and, within ties on ``a``, ``b`` ascending. Sorting
+    once with a single global ``reverse`` flag cannot express that -- it would
+    reverse ``b`` as well.
+
+    This performs the standard stable multi-key sort: sort by the least
+    significant key first, then progressively by more significant keys. Python's
+    sort is stable, so each pass preserves the relative order established by the
+    previous (less significant) passes.
+
+    Nulls are ordered via a rank sentinel rather than by substituting
+    ``+/-inf``, so ordering a column of strings that contains nulls does not
+    raise ``TypeError`` on ``str``/``float`` comparison.
+
+    Args:
+        indices: Row indices to sort.
+        key_funcs: One callable per order key, mapping an index to that key's
+            raw value (may be ``None``).
+        directions: One ``(is_desc, nulls_last)`` pair per order key, aligned
+            with ``key_funcs``.
+
+    Returns:
+        The indices sorted by all keys, honouring each key's own direction.
+    """
+    result = list(indices)
+    # Least significant key first so that the final (most significant) pass wins.
+    for key_func, (is_desc, nulls_last) in zip(
+        reversed(key_funcs), reversed(directions)
+    ):
+        # `sorted(reverse=True)` flips the rank too, so invert the sentinel for
+        # descending keys to keep nulls on the requested side.
+        null_rank = 1 if (nulls_last != is_desc) else -1
+
+        def make_key(
+            kf: Callable[[int], Any] = key_func, nr: int = null_rank
+        ) -> Callable[[int], Tuple[int, Any]]:
+            def _key(idx: int) -> Tuple[int, Any]:
+                value = kf(idx)
+                # Nulls never compare their payload against a non-null: the
+                # rank differs first. Two nulls tie on (nr, 0).
+                return (nr, 0) if value is None else (0, value)
+
+            return _key
+
+        result = sorted(result, key=make_key(), reverse=is_desc)
+    return result
 
 
 def get_row_value(row: Any, key: str, default: Any = None) -> Any:

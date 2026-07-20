@@ -988,3 +988,74 @@ The strict validation in `GroupedData.agg()` raises errors for `AggregateFunctio
 
 **Top 5 bugs would fix 25 test failures (47% of all failures)**
 
+
+---
+
+## 2026-07 PySpark 4.0.0 Compatibility Findings
+
+**Context**: Divergences found while running a large downstream unit-test suite
+(~24k tests) on Sparkless. Every bug in this batch is **silent** -- none raises,
+each returns a plausible-but-wrong value, so assertions of the form
+"not NULL" / "> 0" / "ranks are 1..n" keep passing while the number is wrong.
+
+**Reference engine**: PySpark **4.0.0** on OpenJDK 21 (the Databricks Runtime
+17.3 pairing). Every expected value below was produced by executing the
+reproduction against real PySpark, not derived from the API docs.
+
+---
+
+### BUG-023: Window.orderBy applies one global sort direction to all keys
+**Status**: Fixed
+**Severity**: High
+**Discovered**: 2026-07-20
+**File**: `sparkless/functions/window_execution.py`, `sparkless/dataframe/window_handler.py`
+
+**Description**:
+`Window.orderBy` computed a single `reverse` flag as `any(key is desc)` and
+performed one `sorted()` call with it. Spark applies the direction **per key**,
+so `ORDER BY a DESC, b ASC` must sort `b` ascending within ties on `a`. With the
+global flag, any `desc` key reversed *every* key -- the trailing `asc` tie-break
+came out backwards.
+
+**Reproduction**:
+```python
+df = spark.createDataFrame(
+    [("g", 1, 5.0, "z"), ("g", 1, 5.0, "a"), ("g", 2, 5.0, "m")],
+    ["grp", "prio", "score", "name"],
+)
+w = Window.partitionBy("grp").orderBy(F.col("score").desc(), F.col("name").asc())
+df.withColumn("rn", F.row_number().over(w)).collect()
+```
+
+**Expected (PySpark 4.0.0)**: `a, m, z` (all scores tie, so `name` ascending decides)
+**Actual (Sparkless)**: `z, m, a` -- exactly `name` *descending*
+
+**Confirmed**: 2026-07-20 against PySpark 4.0.0. Also reproduced with three keys
+(`desc, desc, asc` -> expected `m, a, z`, got `m, z, a`) and with an undecorated
+trailing key (`orderBy(desc(score), col(name))`), which must default to ascending.
+
+**Impact**:
+- Silent. `row_number()` still yields 1..n and `rank()` still looks dense, so the
+  shape of the result is right and only the order is wrong.
+- Makes any deterministic tie-break unprovable: a downstream project had to mark
+  its ordering test `requires_real_spark` because the harness could not reproduce
+  the final sort key.
+- `lag`/`lead`/`first`/`last` over a mixed-direction window read the wrong
+  neighbouring row.
+- All-ascending and all-descending windows were unaffected, which is why this
+  survived: the existing mixed-direction test (`test_mixed_order_asc_desc`) uses
+  `orderBy(asc(grp), desc(val))` while partitioned by `grp`, so the `asc` key is
+  constant within each partition and the global reverse happens to be correct.
+
+**Fix**:
+Added `sort_indices_multi_key()` to `sparkless/spark_types.py`, which performs
+the standard stable multi-key sort (least-significant key first, one pass per
+key, each with its own `reverse`). Both order-by implementations now build a
+`(is_desc, nulls_last)` pair per key and delegate to it.
+
+Nulls are now ordered with a rank sentinel instead of by substituting
+`+/-inf`, which additionally fixes a `TypeError` when ordering a nullable
+**string** column (`str` vs `float` comparison).
+
+**Regression tests**: `tests/unit/dataframe/test_window_orderby_per_key_direction.py`
+(12 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
