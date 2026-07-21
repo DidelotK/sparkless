@@ -1,98 +1,96 @@
 name: Release & Publish
 
+# Publishing sparkless to the Azure Artifacts PyPI feed `sparkless`
+# (org `solya-azure-devops`, project `sparkless`).
+#
+# Flow (Changesets): a PR that changes behaviour carries a changeset. On merge to
+# `main`, this workflow opens (or updates) a "Version Packages" PR that bumps the
+# version and consumes the changesets. Publishing happens ONLY when that PR is
+# merged -- a deliberate, reviewable act.
+#
+# Versioning is Changesets, identical to the other Solya repos. Publishing is
+# Python-specific: `scripts/release/publish.sh` builds an sdist + wheel and
+# uploads them with twine, because there is nothing for `changeset publish` to do
+# (the root package.json is a private shim; see .changeset/README.md).
+#
+# WHY THIS FAILS LOUDLY. The previous semantic-release setup decided whether to
+# publish by grepping console prose ("The next release version is X"), and a miss
+# set new_release_published=false, which *skipped* the publish job -- a green run
+# that shipped nothing. Here the decision is made from a git tag, every step is
+# fatal on failure, the upload is verified against the feed, and the final
+# `assert the release actually happened` step re-derives what should have
+# happened and fails the run if it did not.
+#
+# PREREQUISITE: the `AZURE_DEVOPS_PAT` repository secret (Azure DevOps PAT with
+# Packaging read & write). Without it the publish step fails loudly rather than
+# silently no-op'ing.
+
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
 
-env:
-  AZURE_DEVOPS_ORG: solya-azure-devops
-  AZURE_DEVOPS_PROJECT: sparkless
-  AZURE_DEVOPS_FEED: sparkless
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
+    name: Version PR or publish
     runs-on: ubuntu-latest
-    outputs:
-      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+    env:
+      AZURE_DEVOPS_ORG: solya-azure-devops
+      AZURE_DEVOPS_PROJECT: sparkless
+      AZURE_DEVOPS_FEED: sparkless
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          persist-credentials: false
+          # Needed so publish.sh can push the release tag.
+          persist-credentials: true
+
+      # pnpm, not npm: @changesets/cli's transitive @types/node ranges are
+      # mutually unsatisfiable under npm's hoisting, so `npm ci` rejects any
+      # lockfile `npm install` produces. pnpm's nested layout resolves it, and it
+      # is what the other Solya repos already use.
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-
-      - name: Install semantic-release
-        run: npm install -g semantic-release @semantic-release/changelog @semantic-release/git @semantic-release/exec
-
-      - name: Run semantic-release
-        id: semantic
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          npx semantic-release 2>&1 | tee sr_output.txt
-          VERSION=$(grep -oP 'The next release version is \K[0-9]+\.[0-9]+\.[0-9]+' sr_output.txt || true)
-          if [ -n "$VERSION" ]; then
-            echo "new_release_published=true" >> $GITHUB_OUTPUT
-            echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
-            echo "Published version: $VERSION"
-          else
-            echo "new_release_published=false" >> $GITHUB_OUTPUT
-            echo "No new release"
-          fi
-
-  publish:
-    needs: release
-    if: needs.release.outputs.new_release_published == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: v${{ needs.release.outputs.new_release_version }}
+          cache: pnpm
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]" build twine
+      - name: Install Changesets
+        run: pnpm install --frozen-lockfile
 
-      - name: Run tests
-        env:
-          TZ: "America/New_York"
-        run: python -m pytest tests/unit/ tests/parity/ -q --tb=short -o "addopts="
+      - name: Check version files agree
+        run: python3 scripts/release/check_version_consistency.py
 
-      - name: Build package
-        run: python -m build
-
-      - name: Verify build
-        run: |
-          ls -la dist/
-          echo "Version: ${{ needs.release.outputs.new_release_version }}"
-
-      - name: Publish to Azure Artifacts
-        env:
-          AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
-        run: |
-          for f in dist/*.whl dist/*.tar.gz; do
-            echo "Uploading $f..."
-            twine upload \
-              --non-interactive \
-              --repository-url "https://pkgs.dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_packaging/${AZURE_DEVOPS_FEED}/pypi/upload/" \
-              --username _ \
-              --password "${AZURE_DEVOPS_PAT}" \
-              "$f" || echo "Warning: upload of $f failed (may already exist)"
-          done
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - name: Open Version PR, or publish to Azure Artifacts
+        id: changesets
+        uses: changesets/action@v1
         with:
-          name: dist
-          path: dist/
+          # `version` bumps package.json + CHANGELOG.md, then syncs the version
+          # into pyproject.toml and sparkless/_version.py.
+          version: pnpm run version
+          # `release` only runs when there are no pending changesets, i.e. right
+          # after a Version PR merge.
+          publish: pnpm run release
+          title: "chore(release): version packages"
+          commit: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+
+      - name: Assert the release actually happened
+        run: |
+          python3 scripts/release/assert_release_state.py \
+            --version-pr "${{ steps.changesets.outputs.pullRequestNumber }}"
