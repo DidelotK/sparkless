@@ -21,6 +21,15 @@
 
 **Current release:** see [CHANGELOG.md](CHANGELOG.md)
 
+> ⚠️ **Version numbering — read before pinning.** This Solya fork publishes to
+> the private Azure Artifacts feed `sparkless`. An **unrelated** package also
+> called `sparkless` exists on public PyPI (currently 4.13.x), and the Azure feed
+> mirrors it through an upstream passthrough — so both live in the same index
+> under the same name. **Always pin the version**, or you may install the other
+> project. The fork jumped from 4.2.x to **6.0.0** purely to sit above both
+> numbering lines; that major bump is *not* a breaking-change signal. Details in
+> [docs/release-process.md](docs/release-process.md).
+
 *⚡ 10x faster tests • 🎯 Drop-in PySpark replacement • 📦 Zero JVM overhead • 🦀 Robin (Rust) engine*
 
 📚 **[Full Documentation →](https://sparkless.readthedocs.io/)**

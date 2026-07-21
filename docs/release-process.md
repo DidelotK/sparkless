@@ -4,6 +4,33 @@ Sparkless uses [Changesets](https://github.com/changesets/changesets) for
 versioning and changelogs — the same tooling as the other Solya repositories —
 and a Python-specific publish step that uploads the wheel to Azure Artifacts.
 
+## Read this first: the version numbers
+
+The name `sparkless` is shared by three different things, and their numbers do
+not line up:
+
+| Where | Latest | What it is |
+|---|---|---|
+| public PyPI `sparkless` | 4.13.2 | The **upstream** Rust/Polars package (`robin-sparkless` engine) — a different project |
+| Azure Artifacts feed `sparkless` | 5.9.0 | A **mix** of Solya's pure-Python builds and upstream releases cached through the feed's PyPI passthrough |
+| this repository | 6.0.0 | The Solya fork |
+
+Consequences worth knowing before you touch a release:
+
+- **6.0.0 is a deliberate jump, not a breaking change.** The fork's 4.2.x line
+  sat below a public package of the same name already at 4.13.x, so no 4.2.x or
+  5.x release could be unambiguous. 6.0.0 is above everything on both sides.
+  It signals *nothing* about API compatibility — see the note under `## 6.0.0`
+  in [`CHANGELOG.md`](../CHANGELOG.md).
+- **The feed mixes both packages.** Its upstream passthrough caches public PyPI
+  releases into the same index, so `sparkless 4.2.0` on the feed carries ten
+  files: nine upstream Rust platform wheels plus one `py3-none-any` wheel built
+  here. Consumers must **pin the version**; an unpinned `sparkless` can resolve
+  to the upstream project instead of this one.
+- **4.2.3 was never published.** It was versioned and changelogged, but its
+  publish run failed before uploading anything. There is no 4.2.3 artifact and
+  no `v4.2.3` tag.
+
 ## The two-step flow
 
 ```text

@@ -5,7 +5,12 @@
 > **Never published.** The publish run for this version failed before uploading
 > anything (`twine --skip-existing` is not supported by the Azure Artifacts
 > feed), so there is no 4.2.3 artifact on the feed and no `v4.2.3` tag. These
-> fixes shipped in **4.2.4** instead — do not go looking for 4.2.3.
+> fixes shipped in **6.0.0** instead — do not go looking for 4.2.3.
+>
+> 4.2.3 is also the last version in the fork's old 4.2.x line. See the numbering
+> note under 6.0.0 for why the next release jumped to 6.0.0: the name `sparkless`
+> is shared with an unrelated public PyPI package already at 4.13.x, so the 4.2.x
+> numbers were never going to be unambiguous.
 
 ### Patch Changes
 
