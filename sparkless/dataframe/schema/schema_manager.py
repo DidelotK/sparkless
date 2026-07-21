@@ -26,6 +26,7 @@ from ...spark_types import (
 from ...functions import Literal, Column, ColumnOperation
 from ...core.ddl_adapter import parse_ddl_schema
 from ...core.column_resolver import ColumnResolver
+from ...core.type_utils import BOOLEAN_RESULT_OPERATIONS
 
 
 class SchemaManager:
@@ -406,7 +407,9 @@ class SchemaManager:
                     new_fields_map[col_name] = SchemaManager._create_literal_field(col)
                 else:
                     # New column from expression - infer type based on operation
-                    new_fields_map[col_name] = SchemaManager._infer_expression_type(col)
+                    new_fields_map[col_name] = SchemaManager._infer_expression_type(
+                        col, fields_map
+                    )
 
         return new_fields_map
 
@@ -639,6 +642,11 @@ class SchemaManager:
                 fields_map[col_name] = StructField(
                     col_name, field.dataType, field.nullable
                 )
+        elif hasattr(col_any, "get_result_type"):
+            # CaseWhen (F.when(...).otherwise(...)) knows its own result type.
+            # Without this it fell through to _infer_literal_type and every
+            # CASE WHEN column was typed STRING.
+            fields_map[col_name] = StructField(col_name, col_any.get_result_type())
         else:
             # fallback literal inference
             data_type = SchemaManager._infer_literal_type(col_any)
@@ -737,12 +745,53 @@ class SchemaManager:
     @staticmethod
     def _infer_expression_type(
         col: Union[Column, ColumnOperation, Literal, Any],
+        fields_map: Optional[Dict[str, StructField]] = None,
     ) -> StructField:
-        """Infer type for an expression column."""
+        """Infer type for an expression column.
+
+        Args:
+            col: The expression to type.
+            fields_map: Schema of the source DataFrame, when available. Needed
+                for composite results (``struct``) whose field types come from
+                the source columns.
+        """
+        if hasattr(col, "get_result_type"):
+            # CaseWhen knows its own result type.
+            return StructField(col.name, col.get_result_type())
         if hasattr(col, "operation"):
             operation = getattr(col, "operation", None)
             if operation == "datediff":
                 return StructField(col.name, IntegerType())
+            elif operation in ("struct", "named_struct"):
+                return StructField(
+                    col.name,
+                    SchemaManager._infer_struct_type(col, fields_map),
+                    nullable=False,
+                )
+            elif operation == "cast":
+                # The declared target type wins - that is the whole point of
+                # a cast. Without this branch a cast in select() fell through
+                # to the StringType default while the same cast in
+                # withColumn() was typed correctly.
+                cast_type = getattr(col, "value", None)
+                if isinstance(cast_type, str):
+                    return StructField(
+                        col.name,
+                        SchemaManager.parse_cast_type_string(cast_type),
+                        nullable=True,
+                    )
+                # `isinstance(cast_type, DataType)` alone is not reliable:
+                # when PySpark is installed, sparkless's type classes inherit
+                # from *PySpark's* DataType rather than sparkless's, so the
+                # check silently fails and the cast is typed STRING. Accept
+                # anything that carries a type name.
+                if isinstance(cast_type, DataType) or hasattr(
+                    cast_type, "simpleString"
+                ):
+                    return StructField(col.name, cast_type, nullable=True)
+                return StructField(col.name, StringType())
+            elif operation in BOOLEAN_RESULT_OPERATIONS:
+                return StructField(col.name, BooleanType())
             elif operation == "months_between":
                 return StructField(col.name, DoubleType())
             elif operation in [
@@ -781,6 +830,56 @@ class SchemaManager:
         else:
             # No operation attribute - default to StringType
             return StructField(col.name, StringType())
+
+    @staticmethod
+    def _infer_struct_type(
+        col: Union[ColumnOperation, Any],
+        fields_map: Optional[Dict[str, StructField]] = None,
+    ) -> StructType:
+        """Build the StructType produced by a ``struct``/``named_struct`` call.
+
+        Field names follow PySpark's rules (see
+        :mod:`sparkless.core.struct_builder`); field types are looked up from
+        the source schema when the argument is a plain column reference.
+        """
+        from ...core.struct_builder import field_name_for, struct_argument_columns
+
+        fields: List[StructField] = []
+        for position, item in enumerate(struct_argument_columns(col), start=1):
+            name = field_name_for(item, position)
+            fields.append(
+                StructField(
+                    name, SchemaManager._infer_struct_field_type(item, fields_map)
+                )
+            )
+        return StructType(fields)
+
+    @staticmethod
+    def _infer_struct_field_type(
+        item: Any,
+        fields_map: Optional[Dict[str, StructField]] = None,
+    ) -> DataType:
+        """Type one argument of a struct expression."""
+        from ...core.struct_builder import struct_argument_source
+
+        # An alias wraps the real expression; type the expression, not the wrapper.
+        item = struct_argument_source(item)
+
+        if isinstance(item, Literal):
+            return SchemaManager._create_literal_field(item).dataType
+
+        source_name: Optional[str] = None
+        if isinstance(item, str):
+            source_name = item
+        elif isinstance(item, ColumnOperation):
+            # Nested expression - recurse through the normal inference path.
+            return SchemaManager._infer_expression_type(item, fields_map).dataType
+        elif isinstance(item, Column):
+            source_name = item.name
+
+        if source_name and fields_map and source_name in fields_map:
+            return fields_map[source_name].dataType
+        return StringType()
 
     @staticmethod
     def _resolve_struct_type(col: Union[ColumnOperation, Any]) -> Optional[StructType]:

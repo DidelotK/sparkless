@@ -16,6 +16,7 @@ from ...spark_types import (
     LongType,
     MapType,
     StringType,
+    StructType,
     TimestampType,
 )
 
@@ -179,6 +180,24 @@ class TypeConverter:
                     for k, v in value.items()
                 }
             return {value: None}
+        elif isinstance(target_type, StructType):
+            # Struct-to-struct cast is positional: the Nth source field is
+            # renamed to the Nth target field and cast to its type. PySpark
+            # rejects an arity mismatch at analysis time; here the source is
+            # already a dict, so surplus/missing fields are simply dropped or
+            # filled with NULL rather than raising mid-materialisation.
+            if not isinstance(value, dict):
+                return value
+            source_items = list(value.items())
+            result: Dict[Any, Any] = {}
+            for index, field in enumerate(target_type.fields):
+                if index < len(source_items):
+                    result[field.name] = TypeConverter.cast_to_type(
+                        source_items[index][1], field.dataType
+                    )
+                else:
+                    result[field.name] = None
+            return result
         else:
             # Unknown type - return value as-is (could be any type)
             # Any is already included in Union type, so this is acceptable

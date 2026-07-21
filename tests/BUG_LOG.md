@@ -2,9 +2,9 @@
 
 This file tracks bugs and issues discovered during test refactoring and development.
 
-**Last Updated**: 2026-07-20  
+**Last Updated**: 2026-07-21  
 **Context**: Unified PySpark Parity Testing Refactor  
-**Total Bugs Logged**: 23
+**Total Bugs Logged**: 26
 
 ---
 
@@ -183,6 +183,193 @@ result = df.withColumn("running_total", F.sum("salary").over(window))  # Fails
 - `test_sum_over_window`
 - `test_lag`
 - `test_lead`
+
+---
+
+### BUG-031: `struct` evaluates to NULL in `select`, and `.cast(StructType)` is a silent no-op
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**Files**: `sparkless/core/condition_evaluator.py`,
+`sparkless/dataframe/schema/schema_manager.py`,
+`sparkless/dataframe/casting/type_converter.py`,
+`sparkless/dataframe/evaluation/expression_evaluator.py`
+
+**Description**:
+`df.select(F.struct(a, b).cast(some_struct_type))` returned `NULL` for the whole
+struct, typed `STRING`. Three independent gaps produced it, each an instance of
+the *same* failure shape -- a hardcoded dispatch whose unmatched case falls
+through to a silent default, making "unimplemented" indistinguishable from a
+genuine SQL NULL:
+
+1. `ConditionEvaluator._evaluate_column_operation_value` -- the evaluator the
+   lazy `select` path uses -- dispatches on a whitelist of ~150 operation names
+   and ends in `# Default fallback / return None`. `struct` was not in the list.
+   The parallel `ExpressionEvaluator` (used by `withColumn`) *did* implement
+   `struct`, so the two projection paths disagreed about the same expression.
+2. `SchemaManager._infer_expression_type` (the `select` type-inference table)
+   had neither a `struct` nor a `cast` case and defaulted to `StringType`. The
+   parallel `_handle_withcolumn_operation` table did handle `cast`. Two
+   hardcoded tables for the same question, drifted apart.
+3. `TypeConverter.cast_to_type` handled `ArrayType` and `MapType` but not
+   `StructType`, so a struct-to-struct cast fell through its `else: return
+   value` -- a silent no-op instead of the positional rename/retype Spark
+   performs.
+
+Separately, `F.struct("a", "b")` treated every string after the first as a
+*literal* (`{"a": 1.0, "col2": "b"}`) rather than a column reference.
+
+**Reproduction**:
+```python
+df = spark.createDataFrame([(1.5, 2.5)], ["urgency", "risk"])
+target = StructType([StructField("urgency", DoubleType()),
+                     StructField("risk", DoubleType())])
+df.select(F.struct(F.col("urgency"), F.col("risk")).cast(target).alias("scores")).collect()
+# sparkless: [Row(scores=None)]        schema: struct<scores:string>
+# PySpark 4.0.0: [Row(scores=Row(urgency=1.5, risk=2.5))]
+#                                      schema: struct<scores:struct<urgency:double,risk:double>>
+```
+
+**PySpark 4.0.0 reference** (DBR 17.3 runtime):
+
+| Expression | Result | Field names |
+|---|---|---|
+| `F.struct(F.col("a"), F.col("b"))` | `Row(a=…, b=…)` | source column names |
+| `F.struct("a", "b")` | `Row(a=…, b=…)` | strings are *column refs* |
+| `F.struct(F.lit(1), F.col("a"))` | `Row(col1=1, a=…)` | unaliased literal -> `col<position>` |
+| `F.struct("a", F.lit("k"))` | `Row(a=…, col2='k')` | position, not a running count |
+| `F.struct(c.alias("x"))` | `Row(x=…)` | alias wins |
+| `.cast(StructType)` | positional rename + retype | arity mismatch raises `AnalysisException` |
+
+**Fix**:
+- New `sparkless/core/struct_builder.py` holds the single definition of
+  argument unpacking and PySpark's field-naming rules. Both
+  `ConditionEvaluator` and `ExpressionEvaluator` delegate to it, so the two
+  paths can no longer drift (this also removed ~125 lines of duplicated,
+  subtly-wrong logic from `ExpressionEvaluator`).
+- `SchemaManager._infer_expression_type` gained `struct`, `cast`, boolean-op
+  and `CaseWhen` cases.
+- `TypeConverter.cast_to_type` gained a `StructType` branch performing the
+  positional rename/retype.
+
+**Impact**:
+Any struct assembled in a `select` projection -- the shape used when writing a
+struct column to Delta -- was silently NULL. Because the downstream consumer's
+test tier runs entirely on sparkless, the projection could not be asserted at
+all and the affected production functions carried `# pragma: no cover`.
+
+**Not fixed** (divergence recorded, no behaviour change made):
+`F.col("a").cast(StructType(...))` on a scalar returns the scalar unchanged;
+PySpark raises `AnalysisException [DATATYPE_MISMATCH.CAST_WITHOUT_SUGGESTION]`.
+Sparkless does not currently raise analysis-time errors anywhere, so adding one
+here would be an isolated inconsistency.
+
+**Affected Tests**:
+- `tests/unit/functions/test_struct_projection_and_cast.py` (new, 13 tests;
+  12 of the 13 fail on the pre-fix tree)
+
+---
+
+### BUG-032: An expression in a `when`/`otherwise` value position is discarded
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**Files**: `sparkless/functions/conditional.py`,
+`sparkless/dataframe/schema/schema_manager.py`,
+`sparkless/core/type_utils.py`
+
+**Description**:
+`CaseWhen._evaluate_column_operation_value` dispatched on five operations --
+unary `+`/`-`, binary arithmetic, and `create_map`. Everything else hit:
+
+```python
+else:
+    # For other operations, try to get the column value
+    return ConditionEvaluator._get_column_value(row, operation.column)
+```
+
+which returns the value of the operation's *base column*, **discarding the
+operation itself**. So:
+
+| Expression in `.otherwise(...)` | sparkless | PySpark 4.0.0 |
+|---|---|---|
+| `F.datediff(a, b) >= F.lit(90)` | `134` (the day count) | `True` |
+| `F.upper(F.col("sku"))` | `'stale'` (unchanged) | `'STALE'` |
+| `F.col("sku") == F.lit("stale")` | `'stale'` | `True` |
+| `F.col("last_sale_date").isNull()` | `datetime.date(2024, 1, 19)` | `False` |
+
+This is the same shape as BUG-031, but the silent default is *the operand*
+rather than `None` -- arguably worse, because the wrong value has a plausible
+type for the column and nothing downstream flags it.
+
+The result *type* was wrong too. `CaseWhen.get_result_type` mapped every
+non-arithmetic `ColumnOperation` to `StringType`, and neither
+`_handle_withcolumn_operation` nor `_infer_expression_type` consulted
+`get_result_type` at all -- a `CaseWhen` fell through to `_infer_literal_type`,
+which answers `StringType` for anything it does not recognise. So a boolean
+CASE WHEN was typed `STRING`.
+
+**Reproduction**:
+```python
+days_since_sale = F.datediff(F.lit(date(2024, 6, 1)), F.col("last_sale_date"))
+aged = F.when(F.col("last_sale_date").isNull(), F.lit(False)).otherwise(
+    days_since_sale >= F.lit(90)
+)
+df.withColumn("aged_stock_flag", aged).collect()
+# sparkless:      [Row(..., aged_stock_flag=134), ...]   schema: ... flag:string
+# PySpark 4.0.0:  [Row(..., aged_stock_flag=True), ...]  schema: ... flag:boolean
+```
+
+**Fix**:
+- The `else` branch now delegates to `ConditionEvaluator.evaluate_expression`,
+  the shared evaluator that already implements comparisons, the logical
+  connectives and the scalar functions. The arithmetic and unary branches are
+  kept as-is (`ConditionEvaluator`'s arithmetic path returns `None` for the
+  unary form, where `operation.value` is `None`).
+- `get_result_type` gained boolean-operation and `cast` cases; the schema
+  paths now consult `get_result_type` when the expression exposes it.
+- The canonical set of boolean-result operations moved to
+  `sparkless.core.type_utils.BOOLEAN_RESULT_OPERATIONS` so the several places
+  that infer expression types agree.
+
+**Impact**:
+Any derived flag computed in a `when`/`otherwise` was silently wrong -- and
+because the wrong value type-checked, the failure only surfaced against a real
+cluster.
+
+**Affected Tests**:
+- `tests/unit/functions/test_casewhen_expression_values.py` (new, 7 tests;
+  6 of the 7 fail on the pre-fix tree -- the seventh guards the arithmetic
+  branch that already worked)
+
+---
+
+### BUG-033: A comparison yielding NULL returns FALSE in a `select` projection
+**Status**: Open
+**Severity**: High
+**Discovered**: 2026-07-21
+**File**: `sparkless/core/condition_evaluator.py`
+
+**Description**:
+`ConditionEvaluator._evaluate_comparison_operation` returns `False` when an
+operand is NULL, instead of NULL. In SQL a comparison with NULL is NULL, and
+`withColumn` already gets this right (it goes through a different path), so the
+two projection paths disagree:
+
+```python
+df = spark.createDataFrame([(9,), (None,)], "x int")
+df.select((F.col("x") >= F.lit(5)).alias("f")).collect()
+# sparkless:     [Row(f=True), Row(f=False)]
+# PySpark 4.0.0: [Row(f=True), Row(f=None)]
+df.withColumn("f", F.col("x") >= F.lit(5)).collect()   # correct: True, None
+```
+
+Found while fixing BUG-032 (whose production shape guards the NULL row with a
+`when`, so it is unaffected). Deliberately **not** fixed here: NULL comparison
+semantics govern `filter()` across the whole library, so changing them is a
+behavioural change of a different order than the two bugs above, and it touches
+`_evaluate_comparison_operation`, which open PR #19 also edits. It belongs in
+its own change, alongside the Kleene-logic work of BUG-023.
 
 ---
 
