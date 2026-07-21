@@ -92,15 +92,27 @@ nothing. Two mechanisms did that, and both are gone:
    machinery broke" looked identical.
 
    **Now:** the decision is made from a git tag (`scripts/release/publish.sh`),
-   and `scripts/release/assert_release_state.py` runs afterwards and re-derives
-   from repository state what should have happened:
+   and `scripts/release/assert_release_state.py` runs afterwards and asserts the
+   run did what it was supposed to:
 
-   | State | Outcome |
-   |-------|---------|
-   | Pending changesets + Version PR opened | green — "nothing published, by design" |
-   | Pending changesets + **no** Version PR | **red** — the version step is broken |
-   | No pending changesets + version is tagged | green — "already published" |
-   | No pending changesets + version **not** tagged | **red** — the publish did not complete |
+   | Version PR opened? | Pending changesets | Version tagged | Outcome |
+   |---|---|---|---|
+   | **yes** | *(irrelevant)* | *(not queried)* | green — "nothing published, by design" |
+   | no | yes | *(not queried)* | **red** — the version step is broken |
+   | no | no | no | **red** — the publish did not complete |
+   | no | no | yes | green — "already published" |
+
+   The Version PR is checked **first**, and nothing else is consulted when one
+   exists. That ordering matters: by the time the guard runs, `changesets/action`
+   has already run the version command *in the working tree*, so the changesets
+   are consumed and the version files already carry the next version. A healthy
+   version run therefore presents the exact fingerprint of a broken publish — no
+   pending changesets, and a version with no tag. `--version-pr` is the only
+   input that separates them. (Keying off tree state instead failed the job on
+   the first real run, for Version PR #34.)
+
+   Each row is pinned by a unit test in `tests/unit/test_release_guard.py`, run
+   against the guard's pure `decide()` function rather than through the workflow.
 
 2. **The version bump was two `sed` calls** over `pyproject.toml` and
    `sparkless/_version.py`. `sed` exits 0 when it matches nothing, so a rename or
