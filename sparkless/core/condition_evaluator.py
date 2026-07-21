@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 from ..functions.base import Column, ColumnOperation
 from ..spark_types import get_row_value
+from .datetime_utils import coerce_temporal_pair, spark_last_day, spark_trunc
 from .math_utils import spark_bround, spark_round
 from .variadic import variadic_reducer
 
@@ -288,7 +289,7 @@ class ConditionEvaluator:
             try:
                 # Handle DataType objects (Issue #5 fix)
                 from sparkless.dataframe.casting.type_converter import TypeConverter
-                from sparkless.spark_types import DataType
+                from sparkless.spark_types import DataType, DateType, TimestampType
 
                 if isinstance(target_type, DataType):
                     # Use TypeConverter for proper DataType handling
@@ -311,6 +312,19 @@ class ConditionEvaluator:
                     return str(value)
                 elif target_type == "boolean":
                     return bool(value)
+                elif target_type in ("date", "timestamp"):
+                    # Delegate to the same converter the DataType branch above
+                    # uses. Without this, `F.lit("2026-01-01").cast("date")`
+                    # fell to `return value` and stayed a *string* on this
+                    # path, while the projection path produced a real date.
+                    # A predicate then compared date >= str, which raises and
+                    # was swallowed into NULL -- silently dropping every row
+                    # of `df.filter(F.last_day(d) >= lit(s).cast("date"))`
+                    # (BUG-053).
+                    return TypeConverter.cast_to_type(
+                        value,
+                        DateType() if target_type == "date" else TimestampType(),
+                    )
                 else:
                     return value
             except (TypeError, ValueError):
@@ -379,6 +393,8 @@ class ConditionEvaluator:
             "date_add",
             "date_sub",
             "datediff",
+            "last_day",
+            "trunc",
             "months_between",
             "unix_timestamp",
             "from_unixtime",
@@ -739,6 +755,11 @@ class ConditionEvaluator:
                 return (end_dt - start_dt).days
             except (ValueError, AttributeError):
                 return None
+        elif operation_type == "last_day":
+            # DATE-valued even for a TIMESTAMP operand; see core.datetime_utils.
+            return spark_last_day(col_value)
+        elif operation_type == "trunc":
+            return spark_trunc(col_value, operation.value)
         elif operation_type == "months_between":
             # For months_between, we need two dates - get both values
             end_date = ConditionEvaluator._get_column_value(row, operation.column)
@@ -1869,6 +1890,8 @@ class ConditionEvaluator:
             "date_add",
             "date_sub",
             "datediff",
+            "last_day",
+            "trunc",
             "unix_timestamp",
             "from_unixtime",
         ]:
@@ -2531,6 +2554,13 @@ class ConditionEvaluator:
         Returns:
             Tuple of (coerced_left, coerced_right)
         """
+        # Temporal pairs first: a date/datetime beside a string or beside the
+        # other temporal type must be reconciled, or Python raises TypeError
+        # and the comparison collapses to NULL. See core.datetime_utils.
+        temporal_pair = coerce_temporal_pair(left_val, right_val)
+        if temporal_pair is not None:
+            return temporal_pair
+
         # Left is string, right is numeric: convert left to numeric
         if isinstance(left_val, str) and isinstance(right_val, (int, float)):
             try:

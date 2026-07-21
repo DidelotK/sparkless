@@ -404,16 +404,22 @@ class CaseWhen:
             The evaluated value.
         """
         from .core.literals import Literal
+        from sparkless.functions.base import ColumnOperation
 
         if isinstance(value, Literal):
             # For Literal, return the actual value
             return value.value
-        elif hasattr(value, "operation") and hasattr(value, "column"):
+        elif isinstance(value, CaseWhen):
+            # Nested CASE WHEN (``F.when(c1, F.when(c2, a).otherwise(b))``).
+            # Checked before the ``.name`` fallback below: a CaseWhen carries a
+            # generated ``.name`` ("CASE WHEN ... END"), so it used to be looked
+            # up as though it were a *column* of that name. No such column
+            # exists, so every nested branch silently evaluated to NULL
+            # (BUG-051).
+            return value.evaluate(row)
+        elif isinstance(value, ColumnOperation):
             # Handle ColumnOperation (e.g., unary minus, arithmetic operations)
-            from sparkless.functions.base import ColumnOperation
-
-            if isinstance(value, ColumnOperation):
-                return self._evaluate_column_operation_value(row, value)
+            return self._evaluate_column_operation_value(row, value)
         elif hasattr(value, "name"):
             return get_row_value(row, value.name)
         elif hasattr(value, "value"):
