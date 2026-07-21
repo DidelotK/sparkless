@@ -215,11 +215,16 @@ class AggregateFunctions:
         return AggregateFunction(column, "first", DoubleType(), ignorenulls=ignorenulls)
 
     @staticmethod
-    def last(column: Union[Column, str]) -> AggregateFunction:
+    def last(
+        column: Union[Column, str], ignorenulls: bool = False
+    ) -> AggregateFunction:
         """Last value.
 
         Args:
             column: The column to get last value of.
+            ignorenulls: If True, ignore null values and return the last
+                non-null value. If False (default), return the last value even
+                if it is null.
 
         Returns:
             AggregateFunction representing the last function.
@@ -228,7 +233,7 @@ class AggregateFunctions:
             RuntimeError: If no active SparkSession is available
         """
         AggregateFunctions._require_active_session("last aggregate function")
-        return AggregateFunction(column, "last", DoubleType())
+        return AggregateFunction(column, "last", DoubleType(), ignorenulls=ignorenulls)
 
     @staticmethod
     def collect_list(column: Union[Column, str]) -> AggregateFunction:

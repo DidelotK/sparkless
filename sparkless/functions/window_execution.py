@@ -10,6 +10,7 @@ import warnings
 from sparkless.core.protocols import is_row_evaluatable_expression
 from sparkless.functions.window_frames import (
     NULL_AWARE_REDUCERS,
+    POSITIONAL_REDUCERS,
     has_reducer,
     reduce_frame,
     resolve_frame,
@@ -25,6 +26,17 @@ if TYPE_CHECKING:
     from sparkless.functions.base import ColumnOperation
 else:
     from sparkless.functions.base import ColumnOperation
+
+
+#: Window function names that are DISTINCT aggregates, mapped to the base
+#: aggregate Spark names in its error message. Spark rejects all of these over
+#: a window; ``approx_count_distinct`` is *not* one of them.
+DISTINCT_WINDOW_FUNCTIONS: Dict[str, str] = {
+    "countDistinct": "count",
+    "count_distinct": "count",
+    "sum_distinct": "sum",
+    "sumDistinct": "sum",
+}
 
 
 class WindowFunction:
@@ -75,6 +87,15 @@ class WindowFunction:
                 self.column_name = None
         else:
             self.column_name = None
+
+        # ignoreNulls, for first/last/first_value/last_value. Carried on the
+        # AggregateFunction (F.first(col, True)); absent means False, which is
+        # Spark's default. Before BUG-040 this flag was parsed and then never
+        # read on the window path, so `F.first(x, True)` silently behaved like
+        # `F.first(x)`.
+        agg = getattr(function, "_aggregate_function", None)
+        ignore_source = agg if agg is not None else function
+        self.ignore_nulls: bool = bool(getattr(ignore_source, "ignorenulls", False))
 
         # Extract offset and default for lag/lead functions
         self.offset = 1  # Default offset
@@ -444,7 +465,12 @@ class WindowFunction:
 
         Returns:
             List of window function results.
+
+        Raises:
+            AnalysisException: If the function is a DISTINCT aggregate, which
+                Spark rejects over a window.
         """
+        self._reject_distinct_over_window()
         data = self._with_materialized_target(data)
 
         if self.function_name == "row_number":
@@ -465,14 +491,6 @@ class WindowFunction:
             return self._evaluate_cume_dist(data)
         elif self.function_name == "percent_rank":
             return self._evaluate_percent_rank(data)
-        elif self.function_name == "first":
-            return self._evaluate_first(data)
-        elif self.function_name == "last":
-            return self._evaluate_last(data)
-        elif self.function_name == "first_value":
-            return self._evaluate_first_value(data)
-        elif self.function_name == "last_value":
-            return self._evaluate_last_value(data)
         elif (
             self.function_name == "approx_count_distinct"
             or self.function_name == "countDistinct"
@@ -494,6 +512,38 @@ class WindowFunction:
                 stacklevel=2,
             )
             return [None] * len(data)
+
+    def _reject_distinct_over_window(self) -> None:
+        """Raise the way Spark does for a DISTINCT aggregate over a window.
+
+        PySpark 4.0.0 rejects ``F.count_distinct(x).over(w)`` and
+        ``F.sum_distinct(x).over(w)`` at analysis time with
+        ``[DISTINCT_WINDOW_FUNCTION_UNSUPPORTED] ... SQLSTATE: 0A000``.
+        Sparkless used to compute a number for the first and NULL for the
+        second, so a query that *cannot run in production* passed its unit
+        tests -- the mock being more permissive than the thing it mocks
+        (BUG-042).
+
+        ``approx_count_distinct`` is deliberately not in this set: it is not a
+        DISTINCT aggregate and Spark does allow it over a window.
+
+        The check lives on the evaluation path rather than in ``.over()``
+        because ``F.count_distinct(x).over(w)`` on its own is a legal Column
+        in Spark too -- only using it raises.
+
+        Raises:
+            AnalysisException: If this window function is a DISTINCT aggregate.
+        """
+        if self.function_name not in DISTINCT_WINDOW_FUNCTIONS:
+            return
+        from sparkless.core.exceptions.analysis import AnalysisException
+
+        rendered = DISTINCT_WINDOW_FUNCTIONS[self.function_name]
+        column = self.column_name or "*"
+        raise AnalysisException(
+            f"[DISTINCT_WINDOW_FUNCTION_UNSUPPORTED] Distinct window functions "
+            f'are not supported: "{rendered}(DISTINCT {column})". SQLSTATE: 0A000'
+        )
 
     def _evaluate_row_number(self, data: List[Dict[str, Any]]) -> List[int]:
         """Evaluate row_number() window function with proper partitioning and ordering."""
@@ -1095,65 +1145,6 @@ class WindowFunction:
 
         return results
 
-    def _evaluate_first(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate first() window function with proper partitioning and ordering."""
-        # first() behaves the same as first_value() for window functions
-        return self._evaluate_first_value(data)
-
-    def _evaluate_last(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate last() window function with proper partitioning and ordering.
-
-        Note: With orderBy, PySpark's default frame is UNBOUNDED PRECEDING AND CURRENT ROW,
-        so last() returns the current row's value (last in the frame up to current row),
-        not the last value in the entire partition.
-        """
-        if not data or not self.column_name:
-            return [None] * len(data) if data else []
-
-        # Get partition and order columns from window spec
-        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
-        order_by_cols = getattr(self.window_spec, "_order_by", [])
-
-        # If orderBy is specified, last() returns the current row's value
-        # (because default frame is UNBOUNDED PRECEDING AND CURRENT ROW)
-        if order_by_cols:
-            # Create partition groups
-            partition_groups: Dict[Any, List[int]] = {}
-            for i, row in enumerate(data):
-                if partition_by_cols:
-                    partition_key = tuple(
-                        get_row_value(
-                            row, col.name if hasattr(col, "name") else str(col)
-                        )
-                        for col in partition_by_cols
-                    )
-                else:
-                    partition_key = None
-
-                if partition_key not in partition_groups:
-                    partition_groups[partition_key] = []
-                partition_groups[partition_key].append(i)
-
-            # Initialize results
-            results = [None] * len(data)
-
-            # Process each partition
-            for partition_indices in partition_groups.values():
-                # Sort indices by order_by columns
-                sorted_indices = self._sort_indices_by_columns(
-                    data, partition_indices, order_by_cols
-                )
-
-                # For each row in sorted order, last() returns that row's value
-                # (because frame up to current row ends at current row)
-                for sorted_pos, idx in enumerate(sorted_indices):
-                    results[idx] = data[idx].get(self.column_name)
-
-            return results
-        else:
-            # Without orderBy, last() behaves like last_value() - returns last value in partition
-            return self._evaluate_last_value(data)
-
     @staticmethod
     def _order_col_name(col: Any) -> str:
         """Extract the underlying column name from an ORDER BY entry."""
@@ -1184,9 +1175,11 @@ class WindowFunction:
 
         This is the single implementation shared by ``sum``, ``avg``, ``count``,
         ``max``, ``min``, ``collect_list``/``collect_set``, the
-        stddev/variance family and the rest of ``REDUCERS``. It resolves the
-        frame Spark would use for each row (see ``window_frames.resolve_frame``)
-        and applies the registered reducer to it.
+        stddev/variance family and the rest of ``REDUCERS`` -- and, since
+        BUG-040, by the positional ``first``/``last``/``first_value``/
+        ``last_value`` too. It resolves the frame Spark would use for each row
+        (see ``window_frames.resolve_frame``) and applies the registered
+        reducer to it.
         """
         if not data:
             return []
@@ -1194,6 +1187,7 @@ class WindowFunction:
         col_name = self.column_name
         function_name = self.function_name
         null_aware = NULL_AWARE_REDUCERS.get(function_name)
+        positional = POSITIONAL_REDUCERS.get(function_name)
 
         # count(*) has no column and counts rows, NULLs included.
         count_all = null_aware is not None and (not col_name or col_name == "*")
@@ -1255,7 +1249,11 @@ class WindowFunction:
                     continue
 
                 values = [get_row_value(data[j], col_name) for j in frame_indices]
-                if null_aware is not None:
+                if positional is not None:
+                    # Positional functions need the frame in order with NULLs
+                    # intact, plus the call's ignoreNulls flag.
+                    results[idx] = positional(values, ignore_nulls=self.ignore_nulls)
+                elif null_aware is not None:
                     results[idx] = null_aware(values)
                 else:
                     results[idx] = reduce_frame(
@@ -1329,101 +1327,5 @@ class WindowFunction:
                 # Assign same value to all rows in partition
                 for idx in partition_indices:
                     results[idx] = distinct_count
-
-        return results
-
-    def _evaluate_first_value(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate first_value() window function with proper partitioning and ordering."""
-        if not data or not self.column_name:
-            return [None] * len(data) if data else []
-
-        # Get partition and order columns from window spec
-        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
-        order_by_cols = getattr(self.window_spec, "_order_by", [])
-
-        # Create partition groups
-        partition_groups: Dict[Any, List[int]] = {}
-        for i, row in enumerate(data):
-            if partition_by_cols:
-                partition_key = tuple(
-                    get_row_value(row, col.name if hasattr(col, "name") else str(col))
-                    for col in partition_by_cols
-                )
-            else:
-                partition_key = None
-
-            if partition_key not in partition_groups:
-                partition_groups[partition_key] = []
-            partition_groups[partition_key].append(i)
-
-        # Initialize results
-        results = [None] * len(data)
-
-        # Process each partition
-        for partition_indices in partition_groups.values():
-            # Sort indices by order_by columns if specified
-            if order_by_cols:
-                sorted_indices = self._sort_indices_by_columns(
-                    data, partition_indices, order_by_cols
-                )
-            else:
-                sorted_indices = partition_indices
-
-            # Get first value in sorted partition
-            if sorted_indices:
-                first_idx = sorted_indices[0]
-                first_value = data[first_idx].get(self.column_name)
-
-                # Assign first value to all rows in partition
-                for idx in partition_indices:
-                    results[idx] = first_value
-
-        return results
-
-    def _evaluate_last_value(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate last_value() window function with proper partitioning and ordering."""
-        if not data or not self.column_name:
-            return [None] * len(data) if data else []
-
-        # Get partition and order columns from window spec
-        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
-        order_by_cols = getattr(self.window_spec, "_order_by", [])
-
-        # Create partition groups
-        partition_groups: Dict[Any, List[int]] = {}
-        for i, row in enumerate(data):
-            if partition_by_cols:
-                partition_key = tuple(
-                    get_row_value(row, col.name if hasattr(col, "name") else str(col))
-                    for col in partition_by_cols
-                )
-            else:
-                partition_key = None
-
-            if partition_key not in partition_groups:
-                partition_groups[partition_key] = []
-            partition_groups[partition_key].append(i)
-
-        # Initialize results
-        results = [None] * len(data)
-
-        # Process each partition
-        for partition_indices in partition_groups.values():
-            # Sort indices by order_by columns if specified
-            if order_by_cols:
-                sorted_indices = self._sort_indices_by_columns(
-                    data, partition_indices, order_by_cols
-                )
-            else:
-                sorted_indices = partition_indices
-
-            # Get last value in sorted partition
-            if sorted_indices:
-                last_idx = sorted_indices[-1]
-                last_value = data[last_idx].get(self.column_name)
-
-                # Assign last value to all rows in partition
-                for idx in partition_indices:
-                    results[idx] = last_value
 
         return results

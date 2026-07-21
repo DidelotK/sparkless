@@ -977,9 +977,11 @@ class Functions:
         return AggregateFunctions.first(column, ignorenulls=ignorenulls)
 
     @staticmethod
-    def last(column: Union[Column, str]) -> AggregateFunction:
+    def last(
+        column: Union[Column, str], ignorenulls: bool = False
+    ) -> AggregateFunction:
         """Last value."""
-        return AggregateFunctions.last(column)
+        return AggregateFunctions.last(column, ignorenulls=ignorenulls)
 
     @staticmethod
     def collect_list(column: Union[Column, str]) -> AggregateFunction:
@@ -1763,8 +1765,14 @@ class Functions:
         return operation
 
     @staticmethod
-    def first_value(column: Union[Column, str]) -> ColumnOperation:
+    def first_value(
+        column: Union[Column, str], ignoreNulls: bool = False
+    ) -> ColumnOperation:
         """First value window function.
+
+        Args:
+            column: The column to read.
+            ignoreNulls: If True, skip NULLs when picking the value.
 
         Raises:
             RuntimeError: If no active SparkSession is available
@@ -1776,11 +1784,19 @@ class Functions:
         operation = ColumnOperation(column, "first_value")
         operation.name = f"first_value({column.name})"
         operation.function_name = "first_value"
+        # Read by WindowFunction to honour ignoreNulls (BUG-040).
+        operation.ignorenulls = ignoreNulls
         return operation
 
     @staticmethod
-    def last_value(column: Union[Column, str]) -> ColumnOperation:
+    def last_value(
+        column: Union[Column, str], ignoreNulls: bool = False
+    ) -> ColumnOperation:
         """Last value window function.
+
+        Args:
+            column: The column to read.
+            ignoreNulls: If True, skip NULLs when picking the value.
 
         Raises:
             RuntimeError: If no active SparkSession is available
@@ -1792,6 +1808,8 @@ class Functions:
         operation = ColumnOperation(column, "last_value")
         operation.name = f"last_value({column.name})"
         operation.function_name = "last_value"
+        # Read by WindowFunction to honour ignoreNulls (BUG-040).
+        operation.ignorenulls = ignoreNulls
         return operation
 
     @staticmethod

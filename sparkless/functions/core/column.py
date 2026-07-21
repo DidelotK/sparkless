@@ -662,6 +662,10 @@ class ColumnOperation(Column):
         self.operation = _operation  # type: ignore[assignment]
         self.function_name = _operation
         self.return_type: Optional[Any] = None  # Type hint for return type
+        # ignoreNulls, for the positional window functions (first_value /
+        # last_value). Read by WindowFunction; None means "not specified",
+        # which behaves as False -- Spark's default.
+        self.ignorenulls: Optional[bool] = None
 
         # Override _name with the actual generated name (in case name was provided)
         if name is not None:

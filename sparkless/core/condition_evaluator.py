@@ -9,7 +9,8 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 from ..functions.base import Column, ColumnOperation
 from ..spark_types import get_row_value
-from .math_utils import spark_round
+from .math_utils import spark_bround, spark_round
+from .variadic import variadic_reducer
 
 
 def _round_scale(operation: Any) -> int:
@@ -326,6 +327,7 @@ class ConditionEvaluator:
             "trim",
             "abs",
             "round",
+            "bround",
             "log10",
             "log",
             "log2",
@@ -1576,46 +1578,29 @@ class ConditionEvaluator:
                 return dt - timedelta(days=days)
             except (ValueError, AttributeError, TypeError):
                 return None
-        elif operation_type == "greatest":
-            values = []
-            if col_value is not None:
-                values.append(col_value)
+        elif (reducer := variadic_reducer(cast("str", operation_type))) is not None:
+            # greatest/least. The NULL-skipping semantics live in core.variadic
+            # so this path and ExpressionEvaluator (which reaches the same
+            # functions from `withColumn`) cannot drift apart -- they did
+            # before, and only this one was right (BUG-038).
+            values = [col_value]
             if hasattr(operation, "value") and operation.value is not None:
                 remaining = (
                     operation.value
                     if isinstance(operation.value, (list, tuple))
                     else [operation.value]
                 )
-                for col_ref in remaining:
-                    val = ConditionEvaluator._get_column_value(row, col_ref)
-                    if val is not None:
-                        values.append(val)
-            if not values:
-                return None
-            try:
-                return max(values)
-            except TypeError:
-                return None
-        elif operation_type == "least":
-            values = []
-            if col_value is not None:
-                values.append(col_value)
-            if hasattr(operation, "value") and operation.value is not None:
-                remaining = (
-                    operation.value
-                    if isinstance(operation.value, (list, tuple))
-                    else [operation.value]
+                values.extend(
+                    ConditionEvaluator._get_column_value(row, col_ref)
+                    for col_ref in remaining
                 )
-                for col_ref in remaining:
-                    val = ConditionEvaluator._get_column_value(row, col_ref)
-                    if val is not None:
-                        values.append(val)
-            if not values:
-                return None
-            try:
-                return min(values)
-            except TypeError:
-                return None
+            return reducer(values)
+        elif operation_type == "bround":
+            # Same HALF_EVEN semantics as the withColumn path; see
+            # ExpressionEvaluator._func_bround.
+            if not isinstance(col_value, (int, float)) or isinstance(col_value, bool):
+                return col_value
+            return spark_bround(col_value, _round_scale(operation))
         else:
             # For other functions, delegate to the existing function evaluation
             # operation_type is guaranteed to be a string in ColumnOperation
@@ -1832,6 +1817,7 @@ class ConditionEvaluator:
             "trim",
             "abs",
             "round",
+            "bround",
             "log10",
             "log",
             "log2",
