@@ -866,6 +866,70 @@ def create_schema_from_columns(columns: List[str]) -> StructType:
     return StructType(fields)
 
 
+#: Maps an ORDER BY operation name to ``(is_desc, nulls_last)``.
+#:
+#: Spark's defaults are ``ASC NULLS FIRST`` and ``DESC NULLS LAST`` -- which is
+#: exactly why ``asc_nulls_last()`` and ``desc_nulls_first()`` exist as explicit
+#: variants. Verified against PySpark 4.0.0 on OpenJDK 21: ordering ``[1, 2, 4,
+#: NULL]`` ascending puts the NULL row *first*.
+_ORDER_DIRECTIONS: Dict[str, Tuple[bool, bool]] = {
+    "asc": (False, False),
+    "desc": (True, True),
+    "asc_nulls_first": (False, False),
+    "asc_nulls_last": (False, True),
+    "desc_nulls_first": (True, False),
+    "desc_nulls_last": (True, True),
+}
+
+
+def resolve_order_key(
+    col: Any, default_ascending: bool = True
+) -> Tuple[str, bool, bool]:
+    """Resolve one ORDER BY key into ``(column_name, is_desc, nulls_last)``.
+
+    Every sort in the library -- ``DataFrame.orderBy``/``sort`` and the two
+    window-ordering helpers -- funnels through this so the NULL placement
+    cannot drift between them again.
+
+    Args:
+        col: The order key. Accepts a plain column name, a ``Column``, or a
+            ``ColumnOperation`` carrying ``asc``/``desc``/``*_nulls_*``.
+        default_ascending: Direction to use when the key carries none of its
+            own (``df.orderBy("a", ascending=False)`` passes ``False``).
+
+    Returns:
+        ``(column_name, is_desc, nulls_last)``. When no explicit ``nulls_*``
+        variant is given, ``nulls_last`` mirrors the direction: ascending sorts
+        NULLs first, descending sorts them last.
+    """
+    operation: Optional[str] = None
+
+    if isinstance(col, str):
+        col_name = col
+    elif hasattr(col, "column") and hasattr(col.column, "name"):
+        col_name = col.column.name
+        # A wrapped ColumnOperation may carry the direction on the inner
+        # column (e.g. Window.orderBy(col("x").desc()) shapes).
+        operation = getattr(col, "operation", None) or getattr(
+            col.column, "operation", None
+        )
+    elif hasattr(col, "operation"):
+        col_name = col.name if hasattr(col, "name") else str(col)
+        operation = col.operation
+    elif hasattr(col, "name"):
+        col_name = col.name
+        operation = getattr(col, "operation", None)
+    else:
+        col_name = str(col)
+
+    direction = _ORDER_DIRECTIONS.get(operation) if operation else None
+    if direction is None:
+        is_desc = not default_ascending
+        # Spark's default: ASC NULLS FIRST, DESC NULLS LAST.
+        direction = (is_desc, is_desc)
+    return (col_name, direction[0], direction[1])
+
+
 def sort_indices_multi_key(
     indices: List[int],
     key_funcs: List[Callable[[int], Any]],

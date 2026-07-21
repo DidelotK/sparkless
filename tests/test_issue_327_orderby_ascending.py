@@ -220,7 +220,16 @@ class TestIssue327OrderByAscending:
             spark.stop()
 
     def test_orderby_with_null_values(self):
-        """Test orderBy with null values and ascending parameter."""
+        """Test orderBy with null values and ascending parameter.
+
+        Spark's default is ASC NULLS FIRST (BUG-041). This test previously
+        asserted nulls-last and labelled it "PySpark default behavior", which
+        is the opposite of what PySpark does. Verified against PySpark 4.0.0
+        on OpenJDK 21:
+
+            df.orderBy("Value", ascending=True)
+            -> [('Bob', None), ('Alice', 10), ('Charlie', 20)]
+        """
         spark = SparkSession.builder.appName("issue-327").getOrCreate()
         try:
             df = spark.createDataFrame(
@@ -235,10 +244,10 @@ class TestIssue327OrderByAscending:
             rows = result.collect()
 
             assert len(rows) == 3
-            # Nulls should be last (PySpark default behavior)
-            assert rows[0]["Value"] == 10
-            assert rows[1]["Value"] == 20
-            assert rows[2]["Value"] is None
+            # Nulls first: Spark's ASC default is NULLS FIRST.
+            assert rows[0]["Value"] is None
+            assert rows[1]["Value"] == 10
+            assert rows[2]["Value"] == 20
         finally:
             spark.stop()
 
@@ -333,7 +342,16 @@ class TestIssue327OrderByAscending:
             spark.stop()
 
     def test_orderby_mixed_nulls_and_values(self):
-        """Test orderBy with mixed null and non-null values."""
+        """Test orderBy with mixed null and non-null values.
+
+        NULL placement follows the sort direction (BUG-041): ASC NULLS FIRST,
+        DESC NULLS LAST. The ascending half of this test previously asserted
+        nulls-last; the descending half was already correct. Verified against
+        PySpark 4.0.0 on OpenJDK 21:
+
+            ascending=True  -> [(Alice, None), (Charlie, None), (Bob, 5), (David, 10)]
+            ascending=False -> [(David, 10), (Bob, 5), (Alice, None), (Charlie, None)]
+        """
         spark = SparkSession.builder.appName("issue-327").getOrCreate()
         try:
             df = spark.createDataFrame(
@@ -349,21 +367,19 @@ class TestIssue327OrderByAscending:
             rows_asc = result_asc.collect()
 
             assert len(rows_asc) == 4
-            # Non-null values first (ascending), then nulls
-            assert rows_asc[0]["Value"] == 5
-            assert rows_asc[1]["Value"] == 10
-            # Last two should be None (nulls last is PySpark default)
-            assert rows_asc[2]["Value"] is None
-            assert rows_asc[3]["Value"] is None
+            # Nulls first (ascending), then the non-null values in order.
+            assert rows_asc[0]["Value"] is None
+            assert rows_asc[1]["Value"] is None
+            assert rows_asc[2]["Value"] == 5
+            assert rows_asc[3]["Value"] == 10
 
             result_desc = df.orderBy("Value", ascending=False)
             rows_desc = result_desc.collect()
 
             assert len(rows_desc) == 4
-            # Non-null values first (descending), then nulls
+            # Non-null values first (descending), then nulls last.
             assert rows_desc[0]["Value"] == 10
             assert rows_desc[1]["Value"] == 5
-            # Last two should be None
             assert rows_desc[2]["Value"] is None
             assert rows_desc[3]["Value"] is None
         finally:

@@ -22,6 +22,7 @@ from ..spark_types import (
     StructType,
     StringType,
     get_row_value,
+    resolve_order_key,
     _make_hashable,
 )
 
@@ -3006,30 +3007,17 @@ class LazyEvaluationEngine:
                             columns_to_sort = (columns_to_sort,)
 
                         # Parse sort specifications: (col_name, ascending, nulls_first)
+                        # via the shared resolver, so NULL placement matches the
+                        # window-ordering helpers (Spark: ASC NULLS FIRST /
+                        # DESC NULLS LAST).
                         sort_specs = []
                         for col in columns_to_sort:
-                            if isinstance(col, str):
-                                sort_specs.append((col, default_ascending, False))
-                            elif hasattr(col, "operation"):
-                                op_type = col.operation
-                                base = col.column
-                                col_name = (
-                                    base.name if hasattr(base, "name") else str(base)
-                                )
-                                if op_type == "desc" or op_type == "desc_nulls_last":
-                                    sort_specs.append((col_name, False, False))
-                                elif op_type == "desc_nulls_first":
-                                    sort_specs.append((col_name, False, True))
-                                elif op_type == "asc" or op_type == "asc_nulls_last":
-                                    sort_specs.append((col_name, True, False))
-                                elif op_type == "asc_nulls_first":
-                                    sort_specs.append((col_name, True, True))
-                                else:
-                                    sort_specs.append((col_name, True, False))
-                            elif hasattr(col, "name"):
-                                sort_specs.append((col.name, default_ascending, False))
-                            else:
-                                sort_specs.append((str(col), default_ascending, False))
+                            key_name, key_desc, key_nulls_last = resolve_order_key(
+                                col, default_ascending
+                            )
+                            sort_specs.append(
+                                (key_name, not key_desc, not key_nulls_last)
+                            )
 
                         def _compare_rows(a: Any, b: Any) -> int:
                             for col_name, ascending, nulls_first in sort_specs:
