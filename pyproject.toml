@@ -222,9 +222,12 @@ addopts = [
     "--cov-report=html",
     "--cov-report=xml",
     # Filter out warnings we can't control
-    # Pytest async fixture warnings (from green-light plugin compatibility)
-    "-W", "ignore::pytest.PytestRemovedIn9Warning",
-    "-W", "ignore::_pytest.warning_types.PytestRemovedIn9Warning",
+    # NOTE: do not add "-W ignore::pytest.PytestRemovedInNWarning" filters here.
+    # Those classes are removed by the release they name (PytestRemovedIn9Warning
+    # existed in pytest 8.0-9.0 and was dropped in 9.1), and -W is resolved at
+    # config time, so a stale one makes pytest exit 4 before collecting a test.
+    # There is no `filterwarnings = error` in this config, so ignore-filters are
+    # cosmetic only and are not worth that fragility.
     "-W", "ignore:_pytest/fixtures.py::*",
     # Third-party library deprecation warnings
     "-W", "ignore::DeprecationWarning:pandas.*",
