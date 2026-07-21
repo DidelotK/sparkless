@@ -155,11 +155,14 @@ git push origin "refs/tags/${TAG}"
 
 notes="$(python3 scripts/release/extract_changelog.py "${VERSION}")" \
   || die "could not extract the CHANGELOG section for ${VERSION}"
-printf '%s\n' "${notes}" > /tmp/release-notes.md
+
+notes_file="$(mktemp)"
+trap 'rm -f "${notes_file}"' EXIT
+printf '%s\n' "${notes}" > "${notes_file}"
 
 gh release create "${TAG}" \
   --title "${TAG}" \
-  --notes-file /tmp/release-notes.md \
+  --notes-file "${notes_file}" \
   dist/*
 endgroup
 

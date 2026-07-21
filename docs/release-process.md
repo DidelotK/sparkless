@@ -6,7 +6,7 @@ and a Python-specific publish step that uploads the wheel to Azure Artifacts.
 
 ## The two-step flow
 
-```
+```text
 feature PR (carries a .changeset/*.md)
         │  merge to main
         ▼

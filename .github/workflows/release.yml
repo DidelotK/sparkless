@@ -91,6 +91,9 @@ jobs:
           AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
 
       - name: Assert the release actually happened
+        # The PR number is bound to an env var rather than interpolated into the
+        # shell, the standard mitigation for Actions script injection.
+        env:
+          VERSION_PR: ${{ steps.changesets.outputs.pullRequestNumber }}
         run: |
-          python3 scripts/release/assert_release_state.py \
-            --version-pr "${{ steps.changesets.outputs.pullRequestNumber }}"
+          python3 scripts/release/assert_release_state.py --version-pr "${VERSION_PR}"
