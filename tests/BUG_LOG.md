@@ -5,10 +5,85 @@ This file tracks bugs and issues discovered during test refactoring and developm
 **Last Updated**: 2026-07-21  
 **Context**: Unified PySpark Parity Testing Refactor  
 **Total Bugs Logged**: 26
+**Total Bugs Logged**: 25
 
 ---
 
 ## Critical Issues
+
+### BUG-034: Negation of function results / CASE WHEN ignored three-valued logic
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**File**: `sparkless/core/condition_evaluator.py`
+
+> Numbering note: BUG-023/024 are on `main`, and open PRs #19/#20/#22/#23/#24
+> variously claim 023-033. 034 is the next free number at the time of writing;
+> renumber on merge if it collides.
+
+**Description**:
+BUG-023 fixed three-valued logic for *bare boolean columns*, but only that operand
+shape. Two other shapes of boolean expression remained wrong, and the BUG-023 fix
+turned one of them from silently-compensated into visibly wrong:
+
+1. **Function results.** The predicate path (`_evaluate_column_operation`) evaluated
+   function operations with the scalar helper
+   `_evaluate_function_operation(col_value, op)`, which receives only the *first*
+   operand's value and short-circuits `if value is None: return None`. So
+   `coalesce(NULL, False)` evaluated to NULL instead of FALSE. Before BUG-023 the row
+   still survived `~` because `not None` is `True` — two bugs cancelling. After
+   BUG-023, `_kleene_not(None)` correctly returns NULL, so the row was dropped and the
+   latent defect became visible.
+2. **CASE WHEN.** `CaseWhen.__invert__` emits the operation string `"~"`, which no
+   evaluator branch matched (they check `["not", "!"]`). `~F.when(...)` therefore fell
+   through to `return False` for every row and the filter returned an empty result.
+   `CaseWhen` is also not a `Column` subclass, so as a bare predicate it hit the
+   truthiness fallback and was `True` for every row.
+
+**Reproduction**:
+```python
+df = spark.createDataFrame(
+    [("obs", False), ("fc", True), ("legacy", None)],
+    StructType([StructField("vid", StringType()), StructField("is_forecast", BooleanType())]),
+)
+df.filter(~F.coalesce(F.col("is_forecast"), F.lit(False))).collect()
+# -> ['obs']; PySpark returns ['legacy', 'obs']
+df.filter(~F.when(F.col("is_forecast"), F.lit(True)).otherwise(F.lit(False))).collect()
+# -> []; PySpark returns ['legacy', 'obs']
+```
+
+**Reference behaviour**:
+Captured from real PySpark 4.0.0 on Java 21. `coalesce(NULL, False)` is FALSE, so
+`NOT coalesce(...)` is TRUE and the row is kept. For a `CASE WHEN` with no
+`.otherwise`, unmatched rows are NULL and `NOT NULL` is NULL, so `~F.when(cond, x)`
+legitimately filters everything out - that case was already correct and is pinned by a
+test so the fix cannot "achieve" it by accident.
+
+**Impact**:
+- `~F.coalesce(col, F.lit(False))` is the idiomatic "treat NULL as false" gate. It
+  silently dropped every NULL-derived row. Found by a downstream data platform whose
+  historical weather-correlation filter uses exactly this expression to include legacy
+  rows that predate a flag - real rows were being excluded from a real computation.
+- `~F.when(...)` returned an empty result set in all cases.
+
+**Fix**:
+- Added `_to_sql_boolean()`: interprets an evaluated result as a SQL boolean, keeping
+  NULL as NULL so enclosing NOT/AND/OR apply three-valued logic.
+- The function-operation branch of the predicate path now delegates to the row-aware
+  value evaluator (`_evaluate_column_operation_value`) instead of the lossy scalar
+  helper - mirroring what the `udf` branch already did. The value path routes a strict
+  superset of these operations (115 vs 62), so no coverage is lost.
+- `evaluate_condition()` now recognises `CaseWhen` (via `.evaluate(row)`), and `"~"` is
+  accepted alongside `"not"`/`"!"` at all three negation dispatch sites.
+
+**Regression tests**:
+`tests/unit/functions/test_negation_operand_shapes.py` - indexed by operand *shape*
+(function result, CASE WHEN, compound expression, bare column) rather than by truth
+value, which is the axis the BUG-023 truth-table file already covered and the axis on
+which these bugs hid. 5 of the 10 tests fail on the unfixed tree; the other 5 guard
+against fixing one shape by breaking another.
+
+---
 
 ### BUG-023: Boolean columns evaluated as presence checks, breaking three-valued logic
 **Status**: Fixed
