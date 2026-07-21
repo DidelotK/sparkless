@@ -1647,6 +1647,71 @@ class GroupedData:
 
         return alias_name if alias_name else expr.name, None
 
+    #: Prefix for synthetic columns standing in for a resolved aggregate.
+    _AGG_SLOT_PREFIX = "__sparkless_agg_slot_"
+
+    def _resolve_aggregates_to_row(
+        self,
+        expr: Any,
+        group_rows: List[Dict[str, Any]],
+    ) -> Optional[Tuple[Any, Dict[str, Any]]]:
+        """Replace aggregate nodes in ``expr`` with pre-computed scalars.
+
+        Returns ``(substituted_expression, one_row_dict)`` where every aggregate
+        has become a plain column reference into the returned row, or ``None``
+        if the expression contains no aggregate (in which case the caller's
+        existing handling applies unchanged).
+
+        Working on a substituted copy means the outer operation is evaluated by
+        the ordinary ``ExpressionEvaluator`` -- so ``sqrt``, ``round``,
+        ``coalesce``, ``upper``, ``when`` and every other scalar function are
+        supported by construction instead of being enumerated by hand.
+        """
+        import copy as _copy
+
+        row: Dict[str, Any] = {}
+        counter = [0]
+
+        def substitute(node: Any) -> Any:
+            agg = None
+            if isinstance(node, AggregateFunction):
+                agg = node
+            elif (
+                isinstance(node, ColumnOperation)
+                and getattr(node, "_aggregate_function", None) is not None
+            ):
+                agg = node._aggregate_function
+
+            if agg is not None:
+                slot = f"{self._AGG_SLOT_PREFIX}{counter[0]}"
+                counter[0] += 1
+                _, value = self._evaluate_aggregate_function(agg, group_rows)
+                row[slot] = value
+                return Column(slot)
+
+            if isinstance(node, ColumnOperation):
+                new_column = substitute(node.column)
+                new_value = substitute(node.value)
+                if new_column is node.column and new_value is node.value:
+                    return node
+                clone = _copy.copy(node)
+                clone.column = new_column
+                clone.value = new_value
+                return clone
+
+            if isinstance(node, (list, tuple)):
+                converted = [substitute(item) for item in node]
+                if all(new is old for new, old in zip(converted, node)):
+                    return node
+                return type(node)(converted)
+
+            return node
+
+        substituted = substitute(expr)
+        if not row:
+            return None
+        return substituted, row
+
     def _evaluate_column_expression(
         self,
         expr: Union[Column, ColumnOperation],
@@ -1888,6 +1953,23 @@ class GroupedData:
                     if get_row_value(row, col_name) is not None
                 ]
                 return expr.name, min(values) if values else None
+
+        # A scalar function wrapping an aggregate -- F.sqrt(F.sum("x")),
+        # F.round(F.sum("x") / 3, 2), F.coalesce(F.sum("x"), F.lit(0)). The
+        # branches above only ever matched the arithmetic operations
+        # (+ - * / %), so every *named* function fell through to the
+        # `return expr_name, None` at the bottom and reported NULL. Resolve the
+        # aggregates to scalars and let the ordinary expression evaluator apply
+        # the outer function, rather than enumerating sqrt/round/abs/... here.
+        resolved = self._resolve_aggregates_to_row(expr, group_rows)
+        if resolved is not None:
+            substituted, synthetic_row = resolved
+            from ..evaluation.expression_evaluator import ExpressionEvaluator
+
+            value = ExpressionEvaluator().evaluate_expression(
+                synthetic_row, substituted
+            )
+            return expr.name, value
 
         # Fallback to name-based parsing for string expressions
         expr_name = expr.name

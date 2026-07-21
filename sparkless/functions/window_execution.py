@@ -4,11 +4,16 @@ Window functions for Sparkless.
 This module contains window function implementations including row_number, rank, etc.
 """
 
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING, Tuple
-import contextlib
-import sys
+from typing import Any, Dict, List, Set, TYPE_CHECKING, Tuple
+import warnings
 
 from sparkless.core.protocols import is_row_evaluatable_expression
+from sparkless.functions.window_frames import (
+    NULL_AWARE_REDUCERS,
+    has_reducer,
+    reduce_frame,
+    resolve_frame,
+)
 from sparkless.spark_types import get_row_value, sort_indices_multi_key
 
 if TYPE_CHECKING:
@@ -464,18 +469,26 @@ class WindowFunction:
             return self._evaluate_first_value(data)
         elif self.function_name == "last_value":
             return self._evaluate_last_value(data)
-        elif self.function_name == "sum":
-            return self._evaluate_sum(data)
-        elif self.function_name == "avg":
-            return self._evaluate_avg(data)
         elif (
             self.function_name == "approx_count_distinct"
             or self.function_name == "countDistinct"
         ):
             return self._evaluate_approx_count_distinct(data)
-        elif self.function_name == "count":
-            return self._evaluate_count(data)
+        elif has_reducer(self.function_name):
+            # Every frame-shaped aggregate -- sum/avg/count/max/min/collect_*/
+            # stddev/variance/... -- shares one implementation. Adding an
+            # aggregate is a REDUCERS entry, not a new branch here.
+            return self._evaluate_frame_aggregate(data)
         else:
+            # A dispatch miss used to be indistinguishable from a genuine SQL
+            # NULL: the caller saw None either way. Say so out loud.
+            warnings.warn(
+                f"Window function {self.function_name!r} is not implemented by "
+                f"sparkless; returning NULL for every row. This is a gap in the "
+                f"mock, not a value computed from your data.",
+                UserWarning,
+                stacklevel=2,
+            )
             return [None] * len(data)
 
     def _evaluate_row_number(self, data: List[Dict[str, Any]]) -> List[int]:
@@ -1175,211 +1188,114 @@ class WindowFunction:
             # Without orderBy, last() behaves like last_value() - returns last value in partition
             return self._evaluate_last_value(data)
 
-    def _evaluate_sum(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate sum() window function with proper partitioning."""
-        if not data:
-            return []
+    @staticmethod
+    def _order_col_name(col: Any) -> str:
+        """Extract the underlying column name from an ORDER BY entry."""
+        if hasattr(col, "column") and hasattr(col.column, "name"):
+            return str(col.column.name)
+        if hasattr(col, "name"):
+            return str(col.name)
+        return str(col)
 
-        # Get the column name from the function
-        col_name = self.column_name
-        if not col_name:
-            return [None] * len(data)
-
-        # Get partition and order columns from window spec
-        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
-        order_by_cols = getattr(self.window_spec, "_order_by", [])
-
-        # Create partition groups
-        partition_groups: Dict[Any, List[int]] = {}
+    def _partition_groups(
+        self, data: List[Dict[str, Any]], partition_by_cols: List[Any]
+    ) -> List[List[int]]:
+        """Group row indices by their partition key, preserving input order."""
+        groups: Dict[Any, List[int]] = {}
         for i, row in enumerate(data):
             if partition_by_cols:
-                partition_key = tuple(
+                key: Any = tuple(
                     get_row_value(row, col.name if hasattr(col, "name") else str(col))
                     for col in partition_by_cols
                 )
             else:
-                partition_key = None  # Single partition = all rows
+                key = None  # Single partition = all rows
+            groups.setdefault(key, []).append(i)
+        return list(groups.values())
 
-            if partition_key not in partition_groups:
-                partition_groups[partition_key] = []
-            partition_groups[partition_key].append(i)
+    def _evaluate_frame_aggregate(self, data: List[Dict[str, Any]]) -> List[Any]:
+        """Evaluate any frame-shaped aggregate over the window.
 
-        # Initialize results
+        This is the single implementation shared by ``sum``, ``avg``, ``count``,
+        ``max``, ``min``, ``collect_list``/``collect_set``, the
+        stddev/variance family and the rest of ``REDUCERS``. It resolves the
+        frame Spark would use for each row (see ``window_frames.resolve_frame``)
+        and applies the registered reducer to it.
+        """
+        if not data:
+            return []
+
+        col_name = self.column_name
+        function_name = self.function_name
+        null_aware = NULL_AWARE_REDUCERS.get(function_name)
+
+        # count(*) has no column and counts rows, NULLs included.
+        count_all = null_aware is not None and (not col_name or col_name == "*")
+        if not col_name and not count_all:
+            return [None] * len(data)
+
+        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
+        order_by_cols = getattr(self.window_spec, "_order_by", [])
+        rows_between = getattr(self.window_spec, "_rows_between", None)
+        range_between = getattr(self.window_spec, "_range_between", None)
+        has_order_by = bool(order_by_cols)
+
+        descending = False
+        if order_by_cols:
+            first = order_by_cols[0]
+            operation = getattr(first, "operation", None) or getattr(
+                getattr(first, "column", None), "operation", None
+            )
+            descending = str(operation or "").startswith("desc")
+
+        order_names = [self._order_col_name(c) for c in order_by_cols]
+
         results: List[Any] = [None] * len(data)
-
-        # Process each partition
-        for partition_indices in partition_groups.values():
-            # Sort indices by order_by columns if specified
+        for partition_indices in self._partition_groups(data, partition_by_cols):
             if order_by_cols:
-                sorted_indices = self._sort_indices_by_columns(
+                ordered = self._sort_indices_by_columns(
                     data, partition_indices, order_by_cols
                 )
             else:
-                sorted_indices = partition_indices
+                ordered = partition_indices
 
-            # Check for window frame (rowsBetween)
-            rows_between = getattr(self.window_spec, "_rows_between", None)
-            # Window.unboundedPreceding is -sys.maxsize - 1, Window.currentRow is 0
-            unbounded_preceding = -sys.maxsize - 1
-            current_row = 0
-            if (
-                rows_between
-                and rows_between[0] == unbounded_preceding
-                and rows_between[1] == current_row
-            ):
-                # Cumulative sum (running total) - sum from start to current row
-                cumulative_sum = 0.0
-                # Spark's SUM is NULL until at least one non-NULL value is seen;
-                # a running total that has consumed only NULLs is not 0.
-                seen_value = False
-                # Map sorted indices back to original indices
-                # sorted_indices contains the indices in sorted order
-                # partition_indices contains the original indices
-                # We need to assign cumulative sum to rows in sorted order, but store in original positions
-                for sorted_pos, sorted_idx in enumerate(sorted_indices):
-                    row = data[sorted_idx]
-                    if col_name in row and row[col_name] is not None:
-                        with contextlib.suppress(ValueError, TypeError):
-                            cumulative_sum += float(row[col_name])
-                            seen_value = True
-                    # Find the original index position for this sorted index
-                    # sorted_indices[sorted_pos] = sorted_idx, and we need to find where sorted_idx is in partition_indices
-                    original_idx = (
-                        sorted_idx  # sorted_idx is already the original index from data
-                    )
-                    results[original_idx] = cumulative_sum if seen_value else None
-            else:
-                # Calculate sum for entire partition (default behavior)
-                partition_sum = 0.0
-                seen_value = False
-                for idx in sorted_indices:
-                    row = data[idx]
-                    if col_name in row and row[col_name] is not None:
-                        with contextlib.suppress(ValueError, TypeError):
-                            partition_sum += float(row[col_name])
-                            seen_value = True
+            peer_keys = [
+                tuple(get_row_value(data[idx], n) for n in order_names)
+                for idx in ordered
+            ]
+            range_keys = (
+                [get_row_value(data[idx], order_names[0]) for idx in ordered]
+                if len(order_names) == 1
+                else None
+            )
 
-                # Assign same sum to all rows in partition. Spark returns NULL,
-                # not 0, when a partition has no non-NULL value to add up.
-                for idx in partition_indices:
-                    results[idx] = partition_sum if seen_value else None
-
-        return results
-
-    def _evaluate_avg(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate avg() window function with proper partitioning.
-
-        Without orderBy, computes the average of ALL rows in each partition.
-        With orderBy, computes a running average up to the current row.
-        """
-        if not data:
-            return []
-
-        # Get the column name from the function
-        col_name = self.column_name
-        if not col_name:
-            return [None] * len(data)
-
-        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
-        order_by_cols = getattr(self.window_spec, "_order_by", [])
-        has_order_by = bool(order_by_cols)
-
-        if has_order_by:
-            # Running average (frame-based): compute running avg up to current row
-            result: List[Optional[float]] = []
-            running_sum = 0.0
-            count = 0
-
-            for row in data:
-                if col_name in row and row[col_name] is not None:
-                    try:
-                        running_sum += float(row[col_name])
-                        count += 1
-                    except (ValueError, TypeError):
-                        pass
-
-                if count > 0:
-                    result.append(running_sum / count)
-                else:
-                    result.append(None)
-
-            return result
-        else:
-            # No orderBy: compute full partition average
-            partition_groups: Dict[Any, List[int]] = {}
-            for i, row in enumerate(data):
-                if partition_by_cols:
-                    partition_key = tuple(
-                        get_row_value(
-                            row, col.name if hasattr(col, "name") else str(col)
-                        )
-                        for col in partition_by_cols
-                    )
-                else:
-                    partition_key = None
-                if partition_key not in partition_groups:
-                    partition_groups[partition_key] = []
-                partition_groups[partition_key].append(i)
-
-            results: List[Optional[float]] = [None] * len(data)
-            for partition_indices in partition_groups.values():
-                total = 0.0
-                count = 0
-                for idx in partition_indices:
-                    val = data[idx].get(col_name)
-                    if val is not None:
-                        try:
-                            total += float(val)
-                            count += 1
-                        except (ValueError, TypeError):
-                            pass
-                avg_val = total / count if count > 0 else None
-                for idx in partition_indices:
-                    results[idx] = avg_val
-            return results
-
-    def _evaluate_count(self, data: List[Dict[str, Any]]) -> List[Any]:
-        """Evaluate count() window function with proper partitioning.
-
-        For count(*), counts all rows in each partition.
-        For count(col), counts non-null values in each partition.
-        """
-        if not data:
-            return []
-
-        col_name = self.column_name
-        # count(*) uses None or "*" - count all rows
-        count_all = col_name in (None, "*") or not col_name
-
-        partition_by_cols = getattr(self.window_spec, "_partition_by", [])
-
-        partition_groups: Dict[Any, List[int]] = {}
-        for i, row in enumerate(data):
-            if partition_by_cols:
-                partition_key = tuple(
-                    get_row_value(row, col.name if hasattr(col, "name") else str(col))
-                    for col in partition_by_cols
+            for position, idx in enumerate(ordered):
+                lo, hi = resolve_frame(
+                    position,
+                    peer_keys,
+                    has_order_by=has_order_by,
+                    rows_between=rows_between,
+                    range_between=range_between,
+                    range_keys=range_keys,
+                    descending=descending,
                 )
-            else:
-                partition_key = None
-            if partition_key not in partition_groups:
-                partition_groups[partition_key] = []
-            partition_groups[partition_key].append(i)
+                if lo > hi:
+                    frame_indices: List[int] = []
+                else:
+                    frame_indices = ordered[lo : hi + 1]
 
-        results: List[Any] = [None] * len(data)
-        for partition_indices in partition_groups.values():
-            # Default frame: all rows in partition (no rowsBetween = full partition)
-            partition_count = len(partition_indices)
-            if count_all:
-                cnt = partition_count
-            else:
-                cnt = sum(
-                    1
-                    for idx in partition_indices
-                    if data[idx].get(col_name) is not None
-                )
-            for idx in partition_indices:
-                results[idx] = cnt
+                if count_all:
+                    results[idx] = len(frame_indices)
+                    continue
+
+                values = [get_row_value(data[j], col_name) for j in frame_indices]
+                if null_aware is not None:
+                    results[idx] = null_aware(values)
+                else:
+                    results[idx] = reduce_frame(
+                        function_name, [v for v in values if v is not None]
+                    )
+
         return results
 
     def _evaluate_approx_count_distinct(self, data: List[Dict[str, Any]]) -> List[Any]:
