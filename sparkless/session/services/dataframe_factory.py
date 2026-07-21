@@ -462,12 +462,6 @@ class DataFrameFactory:
         # let an in-place mutation of a bound schema leak back into the caller
         # (and, via the `StructType([*OTHER.fields, ...])` idiom, into every
         # other schema sharing those field objects).
-        # BUG-035: bind a *copy* of the schema, never the caller's object graph.
-        # PySpark round-trips the schema through the JVM, so the DataFrame owns
-        # fresh StructField/DataType objects; sparkless kept the caller's, which
-        # let an in-place mutation of a bound schema leak back into the caller
-        # (and, via the `StructType([*OTHER.fields, ...])` idiom, into every
-        # other schema sharing those field objects).
         return DataFrame(data, copy_schema(schema), storage)  # type: ignore[arg-type]
 
     def _handle_schema_inference(
