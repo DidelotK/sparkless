@@ -133,6 +133,13 @@ class ComparisonOperations:
         """Check if column value is not null (PySpark compatibility)."""
         return self.isnotnull()
 
+    def isNaN(self) -> ColumnOperation:
+        """Check if the value is NaN (PySpark compatibility).
+
+        NULL is not NaN: ``isNaN`` is FALSE for a NULL operand, never NULL.
+        """
+        return ColumnOperation(self, "isnan", None)
+
     def eqNullSafe(self, other: Any) -> ColumnOperation:
         """Null-safe equality comparison (PySpark eqNullSafe).
 

@@ -14,6 +14,132 @@ This file tracks bugs and issues discovered during test refactoring and developm
 
 ## Critical Issues
 
+### BUG-046: Predicates and logical connectives returned their operand instead of a boolean
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**Files**: `sparkless/dataframe/evaluation/expression_evaluator.py`,
+`sparkless/core/condition_evaluator.py`
+
+> Numbering note: 001-043 were claimed on `main` or in open PRs, and two
+> concurrent sweeps (ordering/NULL semantics, `least`/`greatest`) are taking
+> 044/045. Renumber on merge if it still collides.
+
+**Description**:
+`ExpressionEvaluator._evaluate_column_operation` — the evaluator behind
+`withColumn`, `when(...)` and aggregate projections — had no branch for the
+null predicates, `isin`, `eqNullSafe`, or the logical connectives `&` / `|` /
+`~`. All of them fell through to `_evaluate_function_call`, whose terminal
+`return value` hands back the **operand**:
+
+- `col.isNotNull()` evaluated to the column's own value.
+- `a & b` evaluated to `a`; `a | b` evaluated to `a`; `~a` evaluated to `a`.
+
+The leaked value is truthy for any non-null row, so an enclosing `when` /
+`filter` matched everything. `a & b` returning `a` also means **every compound
+condition in `when()` was silently reduced to its left operand**.
+
+Separately, `ConditionEvaluator._evaluate_column_operation_value` — the
+evaluator behind `select` — had no entry for `isin`, `between` or
+`eqNullSafe`, so *projecting* those predicates yielded NULL while *filtering*
+on them worked: a third dispatch table that had drifted from the other two.
+`eqNullSafe` was wrong on the predicate path as well (`_evaluate_comparison`
+collapses any NULL operand to `operation == "!="`, so `NULL <=> NULL` was
+FALSE and `1.0 <=> 1.0` was NULL).
+
+**Why it stayed hidden**: a downstream validation framework builds its rules
+as `F.sum(F.when(F.col(c).isNotNull() & cond, 1).otherwise(0))`. Until
+BUG-037/039 were fixed, `F.sum(F.when(...))` returned a constant `0`, so the
+invalid-row count was structurally zero and every rule reported "pass". With
+the aggregate fixed the arithmetic is finally correct — running on a condition
+that was still wrong, which is what surfaced this.
+
+**Reproduction**:
+```python
+df = spark.createDataFrame([{"price": 100.0}, {"price": 200.0}, {"price": 150.0}])
+
+df.withColumn("c", F.col("price").isNotNull()).collect()
+# sparkless -> [100.0, 200.0, 150.0]   PySpark 4.0.0 -> [True, True, True]
+
+df.withColumn("c", (F.col("price") > 1) & (F.col("price") > 1000)).collect()
+# sparkless -> [True, True, True]      PySpark 4.0.0 -> [False, False, False]
+
+c = F.col("price").isNotNull() & (F.col("price") < 0)
+df.agg(F.sum(F.when(c, 1).otherwise(0)).alias("v")).collect()[0]["v"]
+# sparkless -> 3                       PySpark 4.0.0 -> 0
+```
+
+**Reference behaviour**: captured from PySpark 4.0.0 on OpenJDK 21
+(`local[1]`). Divergences found, per evaluation path:
+
+| expression | `withColumn` | `select` | `filter` | PySpark 4.0.0 |
+|---|---|---|---|---|
+| `isNotNull()` | operand | ok | ok | `True` |
+| `isin([...])` | operand | `NULL` | ok | `True` |
+| `eqNullSafe(v)` | operand | `NULL` | wrong | `True` |
+| `between(a, b)` | ok | `NULL` | ok | `True` |
+| `~pred` | operand | ok | ok | `False` |
+| `a & b`, `a \| b` | left operand | ok | ok | combined |
+| `isNull()`, `like`, `rlike`, `contains`, `startswith`, `endswith` | ok | ok | ok | ok |
+
+Three-valued logic, also captured from 4.0.0: `isNull` / `isNotNull` /
+`isNaN` / `eqNullSafe` are total (never NULL); `between` / `isin` / `like` /
+`rlike` / `contains` / `startswith` / `endswith` are NULL over a NULL operand;
+SQL `IN` is NULL when there is no match and the list holds a NULL.
+
+**The fix**:
+- `ExpressionEvaluator` gains `_evaluate_predicate_operation`, dispatched from
+  `_evaluate_column_operation` *before* the function-registry lookup, covering
+  the connectives (through the existing Kleene helpers) and the null /
+  null-safe-equality / membership predicates.
+- The identity fallback in `_evaluate_function_call` now returns NULL rather
+  than the operand when the operation is BOOLEAN-typed, so this class of
+  defect cannot recur silently for an operation added later.
+- `ConditionEvaluator._evaluate_column_operation_value` delegates every
+  predicate to `_evaluate_column_operation` instead of keeping a second,
+  drifting table.
+- `eqNullSafe` and `isnan` are implemented on the predicate path, and
+  `isin` / `between` / `like` / `rlike` return NULL rather than FALSE over a
+  NULL operand.
+- `Column.isNaN()` / `ColumnOperation.isNaN()` / `Literal.isNaN()` added — the
+  PySpark method was missing entirely (only `F.isnan` existed).
+
+**Verified by mutation**: reverting the source changes makes 19 of the 46 new
+tests in `tests/parity/functions/test_predicate_parity.py` fail, including the
+decisive aggregate check. The remaining 27 are guards that must keep passing
+(`isNull`, the string predicates, `filter` agreement) so the fix cannot be
+"achieved" by making the predicates return NULL for everything. Reverting each
+of the three source files independently fails a distinct subset.
+
+---
+
+### BUG-047: `<comparison>` against NULL is FALSE/TRUE on the select and filter paths
+**Status**: Open
+**Severity**: High
+**File**: `sparkless/core/condition_evaluator.py` (`_evaluate_comparison`)
+
+`_evaluate_comparison` short-circuits `if col_value is None or condition_value
+is None: return operation == "!="`. Spark returns NULL for *every* comparison
+with a NULL operand, including `!=`. Two consequences, both verified against
+PySpark 4.0.0:
+
+```python
+# one row, d = NULL
+df.filter(F.col("d") != 1).count()      # sparkless 1; PySpark 0
+df.select((~(F.col("d") > 1)).alias("c"))  # sparkless True; PySpark NULL
+```
+
+The second follows from the first: `_kleene_not` is correct, but it is handed
+`False` where it should be handed `None`. `ExpressionEvaluator` already gets
+this right (`withColumn` returns NULL), so this is the select/filter path only
+— a fourth spelling of the same schism BUG-046 collapsed.
+
+Not fixed here: it moves rows under every `filter` in the suite at once and
+belongs with the ordering/NULL-semantics sweep rather than with a predicate
+fix.
+
+---
+
 ### BUG-043: `createDataFrame` bound the caller's schema object graph by reference
 **Status**: Fixed
 **Severity**: Critical

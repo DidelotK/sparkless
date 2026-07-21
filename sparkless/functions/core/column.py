@@ -162,6 +162,13 @@ class ColumnOperatorMixin:
         """Check if column value is not null (PySpark compatibility)."""
         return self.isnotnull()
 
+    def isNaN(self) -> "ColumnOperation":
+        """Check if column value is NaN (PySpark compatibility).
+
+        NULL is not NaN: ``isNaN`` is FALSE for a NULL operand, never NULL.
+        """
+        return self._create_operation("isnan", None)
+
     def isin(self, *values: Any) -> "ColumnOperation":
         """Check if column value is in list of values.
 
