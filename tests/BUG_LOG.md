@@ -6,6 +6,7 @@ This file tracks bugs and issues discovered during test refactoring and developm
 **Context**: Unified PySpark Parity Testing Refactor  
 **Total Bugs Logged**: 26
 **Total Bugs Logged**: 25
+**Total Bugs Logged**: 29
 
 ---
 
@@ -1398,3 +1399,117 @@ That is a separate, additive fix.
 
 **Regression tests**: `tests/unit/dataframe/test_aggregate_over_expression.py`
 (15 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+## Array set/search functions (PySpark 4.0.0 parity)
+
+Numbering follows the assignments made in PR #20, which documented both of
+these as open findings. Reference values were produced by executing each
+reproduction against real **PySpark 4.0.0** on OpenJDK 21 (the DBR 17.3
+pairing), not derived from the API docs.
+
+---
+
+### BUG-028: array_except and array_intersect are not implemented
+**Status**: Fixed
+**Severity**: Medium
+**Discovered**: 2026-07-20
+**File**: `sparkless/core/condition_evaluator.py`
+
+**Description**:
+Neither function had an evaluator branch anywhere. The constructors
+(`sparkless/functions/array.py`) and the re-exports exist, so the call built
+fine, matched no `operation_type`, and fell through to the dispatch's default
+`return None`.
+
+This is **not** an argument-passing problem: it returned NULL even with a
+pure-literal second argument. That is what distinguishes it from BUG-029,
+which it superficially resembles.
+
+**Reproduction**:
+```python
+F.array_except(F.col("doms"), F.array(F.lit("d1")))  # PySpark ['d2'] -> Sparkless None
+F.array_except(F.col("doms"), F.array(F.col("domain")))  # PySpark ['d2'] -> Sparkless None
+F.array_intersect(F.col("doms"), F.array(F.col("domain")))  # PySpark ['d1'] -> Sparkless None
+```
+
+**Reference behaviour (PySpark 4.0.0)**:
+Both have set semantics: the result is **deduplicated** and keeps the
+first-occurrence order of the left array.
+`array_except(['a','b','a','c'], ['a'])` is `['b','c']`;
+`array_intersect(['a','a','b'], ['a','b'])` is `['a','b']`.
+A NULL array on either side yields NULL; an empty result is `[]`, not NULL.
+NULL participates as an ordinary **value**, not as SQL NULL:
+`array_except(['a',NULL,'b'], [NULL])` is `['a','b']`.
+
+**Fix**:
+One shared branch implementing both (they differ only in the sense of the
+membership test), placed next to `array_union` and mirroring its handling of
+unhashable elements via a new `_element_key` helper. Both names added to the
+function-op whitelist.
+
+---
+
+### BUG-029: array_remove and array_position do not resolve a Column argument
+**Status**: Fixed
+**Severity**: High
+**Discovered**: 2026-07-20
+**File**: `sparkless/core/condition_evaluator.py`
+
+**Description**:
+Both branches used `operation.value` raw, without resolving it against the
+row:
+
+```python
+remove_value = operation.value          # still a Column
+return [x for x in col_value if x != remove_value]
+```
+
+`x != <Column>` invokes `Column.__ne__`, which returns a **truthy
+ColumnOperation rather than a bool**, so every element passed the filter and
+the array came back unchanged. With a literal second argument both worked
+correctly. The neighbouring `array_contains` and `array_union` already
+resolved their operand; these two were the outliers.
+
+**`array_position` had the same defect and was worse**: `list.index()` uses
+`==`, and `Column.__eq__` is likewise truthy, so it matched index 0
+unconditionally — returning a *plausible wrong number* rather than an
+obviously-unchanged array.
+
+**Reproduction**:
+```python
+F.array_remove(F.col("doms"), F.col("domain"))    # PySpark ['d2'] -> Sparkless ['d1','d2']
+F.array_position(F.col("doms"), F.col("domain"))  # domain='zz' absent:
+                                                  # PySpark 0 -> Sparkless 1
+```
+
+**Reference behaviour (PySpark 4.0.0)**:
+- `array_remove` removes every occurrence and does **not** deduplicate the
+  survivors. A **NULL** value argument makes the whole result NULL (it does
+  not mean "remove nothing").
+- `array_position` is a 1-based index, `0` when absent. A NULL value argument
+  yields NULL. NULL elements occupy a position:
+  `array_position(['d1',NULL,'d2'], 'd2')` is `3`.
+
+**Impact**:
+- Silent in both cases. The `array_position` variant is the dangerous one: a
+  wrong integer index looks like a legitimate answer and passes any
+  "not NULL" / "> 0" assertion.
+- A downstream `collect_set(domain)` minus-own-value projection — the natural
+  Spark formulation of "which *other* values fired" — returned the full set
+  **including the row's own value**, silently violating the exclude-self
+  invariant the column existed to satisfy.
+
+**Fix**:
+Added a shared `_resolve_operand()` helper that resolves a
+`Column`/`ColumnOperation`/`Literal` operand against the row while leaving
+plain Python scalars (notably bare `str`, which is the PySpark signature for
+these functions) as literals. Routed `array_remove`, `array_position` and
+both copies of `array_contains` through it, and added the NULL-argument
+semantics above.
+
+**Relationship to BUG-028**: distinct root causes. BUG-028 is an unmatched
+dispatch falling through to a silent `None` (the failure design shared with
+BUG-024/026/027); BUG-029 is a missing operand resolution inside branches
+that do exist. Only BUG-029 is addressed by `_resolve_operand`.
+
+**Regression tests**: `tests/unit/functions/test_array_column_argument_resolution.py`
+(19 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
