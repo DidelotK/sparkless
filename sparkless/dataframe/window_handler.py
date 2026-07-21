@@ -8,7 +8,7 @@ following the Single Responsibility Principle.
 from typing import Any, Dict, List, Tuple
 import sys
 
-from ..spark_types import get_row_value
+from ..spark_types import get_row_value, sort_indices_multi_key
 
 
 class WindowFunctionHandler:
@@ -241,72 +241,53 @@ class WindowFunctionHandler:
         if not order_by_cols:
             return indices
 
-        def sort_key(idx: int) -> Tuple[Any, ...]:
-            row = data[idx]
-            key_values = []
-            for col in order_by_cols:
-                # Handle ColumnOperation objects (like col("salary").desc())
-                operation = None
-                nulls_last = True  # Default: nulls last
-                is_desc = False
+        key_funcs: List[Any] = []
+        directions: List[Tuple[bool, bool]] = []
 
-                if hasattr(col, "operation"):
-                    operation = col.operation
-                    # Check for nulls variant operations
-                    if operation == "desc_nulls_last":
-                        is_desc = True
-                        nulls_last = True
-                    elif operation == "desc_nulls_first":
-                        is_desc = True
-                        nulls_last = False
-                    elif operation == "asc_nulls_last":
-                        is_desc = False
-                        nulls_last = True
-                    elif operation == "asc_nulls_first":
-                        is_desc = False
-                        nulls_last = False
-                    elif operation == "desc":
-                        is_desc = True
-                        nulls_last = True  # Default for desc
-                    elif operation == "asc":
-                        is_desc = False
-                        nulls_last = True  # Default for asc
+        for col in order_by_cols:
+            # Handle ColumnOperation objects (like col("salary").desc())
+            operation = None
+            nulls_last = True  # Default: nulls last
+            is_desc = False
 
-                if hasattr(col, "column") and hasattr(col.column, "name"):
-                    col_name = col.column.name
-                elif hasattr(col, "name"):
-                    col_name = col.name
-                else:
-                    col_name = str(col)
-                value = get_row_value(row, col_name)
+            if hasattr(col, "operation"):
+                operation = col.operation
+                # Check for nulls variant operations
+                if operation == "desc_nulls_last":
+                    is_desc = True
+                    nulls_last = True
+                elif operation == "desc_nulls_first":
+                    is_desc = True
+                    nulls_last = False
+                elif operation == "asc_nulls_last":
+                    is_desc = False
+                    nulls_last = True
+                elif operation == "asc_nulls_first":
+                    is_desc = False
+                    nulls_last = False
+                elif operation == "desc":
+                    is_desc = True
+                    nulls_last = True  # Default for desc
+                elif operation == "asc":
+                    is_desc = False
+                    nulls_last = True  # Default for asc
 
-                # Handle None values based on nulls_last flag
-                if value is None:
-                    if nulls_last:
-                        # Put nulls at the end: use max value for asc, min value for desc
-                        key_values.append(
-                            float("inf") if not is_desc else float("-inf")
-                        )
-                    else:
-                        # Put nulls at the start: use min value for asc, max value for desc
-                        key_values.append(
-                            float("-inf") if not is_desc else float("inf")
-                        )
-                else:
-                    key_values.append(value)
-            return tuple(key_values)
+            if hasattr(col, "column") and hasattr(col.column, "name"):
+                col_name = col.column.name
+            elif hasattr(col, "name"):
+                col_name = col.name
+            else:
+                col_name = str(col)
 
-        # Check if any column has desc operation
-        has_desc = any(
-            (
-                hasattr(col, "operation")
-                and col.operation in ("desc", "desc_nulls_last", "desc_nulls_first")
-            )
-            for col in order_by_cols
-        )
+            def make_key_func(name: str = col_name) -> Any:
+                return lambda idx: get_row_value(data[idx], name)
 
-        # Sort indices based on the ordering
-        return sorted(indices, key=sort_key, reverse=has_desc)
+            key_funcs.append(make_key_func())
+            directions.append((is_desc, nulls_last))
+
+        # Each key carries its own direction: ORDER BY a DESC, b ASC must sort
+        # b ascending within ties on a. A single global `reverse` cannot do that.
+        return sort_indices_multi_key(indices, key_funcs, directions)
 
     def _apply_lag_lead_to_partition(
         self,
