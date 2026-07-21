@@ -1,130 +1,127 @@
 # sparkless
 
-## [4.2.1](https://github.com/Solya-app/sparkless/compare/v4.2.0...v4.2.1) (2026-04-13)
+## 4.2.3
 
+### Patch Changes
+
+- 650bb47: Built-in function fixes: `F.round` honours its `scale` argument and rounds HALF_UP, `least`/`greatest`/`bround` are implemented, `array_except`/`array_intersect` are added, `Column` arguments are resolved wherever a function accepts one, and `last_day`/`trunc` plus date predicates evaluate correctly.
+- 650bb47: `when`/`otherwise` chains are evaluated properly: nested `CASE WHEN`, struct projections and arbitrary expressions inside a branch, and aggregates computed over a `CASE WHEN` all return the value Spark returns.
+- 650bb47: Binding a schema copies it instead of retaining the caller's object graph, so mutating a schema after use no longer reaches back into an already-built DataFrame.
+- 650bb47: SQL NULL semantics now match Spark: boolean columns, negated function results and comparison operators all evaluate under three-valued logic, predicates and logical connectives resolve to booleans instead of to one of their operands, and NULLs sort in Spark's order.
+- 650bb47: Window functions go through a single frame engine: `Window.orderBy` applies per-key sort direction, window frames are resolved rather than approximated, and positional window functions are routed through the same engine as the other aggregates.
+
+## [4.2.1](https://github.com/Solya-app/sparkless/compare/v4.2.0...v4.2.1) (2026-04-13)
 
 ### Bug Fixes
 
-* remove duplicate version line from merge conflict in _version.py ([017bd48](https://github.com/Solya-app/sparkless/commit/017bd4812d506e0befc7e74c4e1d7fb4f5cf4501))
-* unwrap Literal objects in between() and comparison operations (v5.9.0) ([3f3758c](https://github.com/Solya-app/sparkless/commit/3f3758cd701ab6e058920b9387dddddda43ebcc6))
-* use dot notation for aliased column prefixes (PySpark compat) ([#15](https://github.com/Solya-app/sparkless/issues/15)) ([84eb332](https://github.com/Solya-app/sparkless/commit/84eb3329f7056af562b3fa988c14a705773bf89b))
+- remove duplicate version line from merge conflict in \_version.py ([017bd48](https://github.com/Solya-app/sparkless/commit/017bd4812d506e0befc7e74c4e1d7fb4f5cf4501))
+- unwrap Literal objects in between() and comparison operations (v5.9.0) ([3f3758c](https://github.com/Solya-app/sparkless/commit/3f3758cd701ab6e058920b9387dddddda43ebcc6))
+- use dot notation for aliased column prefixes (PySpark compat) ([#15](https://github.com/Solya-app/sparkless/issues/15)) ([84eb332](https://github.com/Solya-app/sparkless/commit/84eb3329f7056af562b3fa988c14a705773bf89b))
 
 # [4.2.0](https://github.com/Solya-app/sparkless/compare/v4.1.1...v4.2.0) (2026-03-26)
 
-
 ### Bug Fixes
 
-* CaseWhen/Literal resolution in filters, try_to_timestamp format (v5.8.0) ([876f907](https://github.com/Solya-app/sparkless/commit/876f907ecaf6b29876afd7e1904d85c99061cd30))
-* resolve CaseWhen comparison and rlike filter bugs (v5.1.0) ([96c255a](https://github.com/Solya-app/sparkless/commit/96c255aea0853dd17c30aea5a8a24f20344c9a02))
-
+- CaseWhen/Literal resolution in filters, try_to_timestamp format (v5.8.0) ([876f907](https://github.com/Solya-app/sparkless/commit/876f907ecaf6b29876afd7e1904d85c99061cd30))
+- resolve CaseWhen comparison and rlike filter bugs (v5.1.0) ([96c255a](https://github.com/Solya-app/sparkless/commit/96c255aea0853dd17c30aea5a8a24f20344c9a02))
 
 ### Features
 
-* **sql:** add RESTORE TABLE SQL command support ([#5](https://github.com/Solya-app/sparkless/issues/5)) ([286d86b](https://github.com/Solya-app/sparkless/commit/286d86b2d325fce25cea5060e174c0d02e3c10b7))
-* **sql:** add VACUUM SQL command support ([#6](https://github.com/Solya-app/sparkless/issues/6)) ([0b775a4](https://github.com/Solya-app/sparkless/commit/0b775a4271d9f259adc424bdb8eeb85139c655cb))
+- **sql:** add RESTORE TABLE SQL command support ([#5](https://github.com/Solya-app/sparkless/issues/5)) ([286d86b](https://github.com/Solya-app/sparkless/commit/286d86b2d325fce25cea5060e174c0d02e3c10b7))
+- **sql:** add VACUUM SQL command support ([#6](https://github.com/Solya-app/sparkless/issues/6)) ([0b775a4](https://github.com/Solya-app/sparkless/commit/0b775a4271d9f259adc424bdb8eeb85139c655cb))
 
 ## [4.3.1](https://github.com/Solya-app/sparkless/compare/v4.3.0...v4.3.1) (2026-03-26)
 
-
 ### Bug Fixes
 
-* resolve CaseWhen comparison and rlike filter bugs (v5.1.0) ([96c255a](https://github.com/Solya-app/sparkless/commit/96c255aea0853dd17c30aea5a8a24f20344c9a02))
+- resolve CaseWhen comparison and rlike filter bugs (v5.1.0) ([96c255a](https://github.com/Solya-app/sparkless/commit/96c255aea0853dd17c30aea5a8a24f20344c9a02))
 
 # [4.3.0](https://github.com/Solya-app/sparkless/compare/v4.2.0...v4.3.0) (2026-03-26)
 
-
 ### Features
 
-* **sql:** add RESTORE TABLE SQL command support ([#5](https://github.com/Solya-app/sparkless/issues/5)) ([286d86b](https://github.com/Solya-app/sparkless/commit/286d86b2d325fce25cea5060e174c0d02e3c10b7))
+- **sql:** add RESTORE TABLE SQL command support ([#5](https://github.com/Solya-app/sparkless/issues/5)) ([286d86b](https://github.com/Solya-app/sparkless/commit/286d86b2d325fce25cea5060e174c0d02e3c10b7))
 
 # [4.2.0](https://github.com/Solya-app/sparkless/compare/v4.1.1...v4.2.0) (2026-03-26)
 
-
 ### Features
 
-* **sql:** add VACUUM SQL command support ([#6](https://github.com/Solya-app/sparkless/issues/6)) ([0b775a4](https://github.com/Solya-app/sparkless/commit/0b775a4271d9f259adc424bdb8eeb85139c655cb))
+- **sql:** add VACUUM SQL command support ([#6](https://github.com/Solya-app/sparkless/issues/6)) ([0b775a4](https://github.com/Solya-app/sparkless/commit/0b775a4271d9f259adc424bdb8eeb85139c655cb))
 
 ## [4.1.1](https://github.com/Solya-app/sparkless/compare/v4.1.0...v4.1.1) (2026-03-26)
 
-
 ### Bug Fixes
 
-* **ci:** handle Azure Artifacts upload conflicts gracefully ([beab9f2](https://github.com/Solya-app/sparkless/commit/beab9f2d38e5635bb1abcfae181ba015f94b3a52))
+- **ci:** handle Azure Artifacts upload conflicts gracefully ([beab9f2](https://github.com/Solya-app/sparkless/commit/beab9f2d38e5635bb1abcfae181ba015f94b3a52))
 
 # [4.1.0](https://github.com/Solya-app/sparkless/compare/v4.0.0...v4.1.0) (2026-03-26)
 
-
 ### Bug Fixes
 
-* **ci:** remove --skip-existing flag unsupported by Azure Artifacts ([25f34f6](https://github.com/Solya-app/sparkless/commit/25f34f6e64358ea56feb57bafa8b160174e3118f))
-
+- **ci:** remove --skip-existing flag unsupported by Azure Artifacts ([25f34f6](https://github.com/Solya-app/sparkless/commit/25f34f6e64358ea56feb57bafa8b160174e3118f))
 
 ### Features
 
-* add CTE (WITH clause) support to SQL executor ([#10](https://github.com/Solya-app/sparkless/issues/10)) ([774ff31](https://github.com/Solya-app/sparkless/commit/774ff318cf2b4f6f769dc15b21cea2330703be05))
-* **catalog:** add dropTempView and listLocalTempViews support ([#9](https://github.com/Solya-app/sparkless/issues/9)) ([04ced3c](https://github.com/Solya-app/sparkless/commit/04ced3c2e58b215c9a6fad0cc937670ea1b59e5e))
-* **sql:** add ALTER TABLE support ([#7](https://github.com/Solya-app/sparkless/issues/7)) ([a1741c5](https://github.com/Solya-app/sparkless/commit/a1741c5c92d3b8306dd50a5d42944ba2257ab85a))
+- add CTE (WITH clause) support to SQL executor ([#10](https://github.com/Solya-app/sparkless/issues/10)) ([774ff31](https://github.com/Solya-app/sparkless/commit/774ff318cf2b4f6f769dc15b21cea2330703be05))
+- **catalog:** add dropTempView and listLocalTempViews support ([#9](https://github.com/Solya-app/sparkless/issues/9)) ([04ced3c](https://github.com/Solya-app/sparkless/commit/04ced3c2e58b215c9a6fad0cc937670ea1b59e5e))
+- **sql:** add ALTER TABLE support ([#7](https://github.com/Solya-app/sparkless/issues/7)) ([a1741c5](https://github.com/Solya-app/sparkless/commit/a1741c5c92d3b8306dd50a5d42944ba2257ab85a))
 
 # [3.29.0](https://github.com/Solya-app/sparkless/compare/v3.28.0...v3.29.0) (2026-03-26)
 
-
 ### Features
 
-* **sql:** add ALTER TABLE support ([#7](https://github.com/Solya-app/sparkless/issues/7)) ([a1741c5](https://github.com/Solya-app/sparkless/commit/a1741c5c92d3b8306dd50a5d42944ba2257ab85a))
+- **sql:** add ALTER TABLE support ([#7](https://github.com/Solya-app/sparkless/issues/7)) ([a1741c5](https://github.com/Solya-app/sparkless/commit/a1741c5c92d3b8306dd50a5d42944ba2257ab85a))
 
 # [3.28.0](https://github.com/Solya-app/sparkless/compare/v3.27.0...v3.28.0) (2026-03-26)
 
-
 ### Features
 
-* add CTE (WITH clause) support to SQL executor ([#10](https://github.com/Solya-app/sparkless/issues/10)) ([774ff31](https://github.com/Solya-app/sparkless/commit/774ff318cf2b4f6f769dc15b21cea2330703be05))
-* **catalog:** add dropTempView and listLocalTempViews support ([#9](https://github.com/Solya-app/sparkless/issues/9)) ([04ced3c](https://github.com/Solya-app/sparkless/commit/04ced3c2e58b215c9a6fad0cc937670ea1b59e5e))
+- add CTE (WITH clause) support to SQL executor ([#10](https://github.com/Solya-app/sparkless/issues/10)) ([774ff31](https://github.com/Solya-app/sparkless/commit/774ff318cf2b4f6f769dc15b21cea2330703be05))
+- **catalog:** add dropTempView and listLocalTempViews support ([#9](https://github.com/Solya-app/sparkless/issues/9)) ([04ced3c](https://github.com/Solya-app/sparkless/commit/04ced3c2e58b215c9a6fad0cc937670ea1b59e5e))
 
 # [3.27.0](https://github.com/Solya-app/sparkless/compare/v3.26.1...v3.27.0) (2026-03-26)
 
-
 ### Bug Fixes
 
-* add xxhash as core dependency for PySpark-compatible hashing ([86e38d2](https://github.com/Solya-app/sparkless/commit/86e38d249e1e9ac6a4b94ff2e2232c0db7f97e1e))
-* additional test fixes from parallel agents ([3bfcbdf](https://github.com/Solya-app/sparkless/commit/3bfcbdf86bcc326058617760f4c892a6a24886da))
-* agents fix window arithmetic, isin, UDF filter, explode, etc (10 remaining) ([47a0ea4](https://github.com/Solya-app/sparkless/commit/47a0ea41f9eacc73254da25336bec181ea2cb871))
-* apply ruff format to fix CI lint-and-type job ([9bc82be](https://github.com/Solya-app/sparkless/commit/9bc82be9a0c9b06ab1116b0a493d84737ac78cda))
-* background agents fix withField, create_map union, array ops (17 remaining) ([59c594e](https://github.com/Solya-app/sparkless/commit/59c594ea6113215c58048297d0459d981b739419))
-* date_trunc for date objects, down to 24 remaining failures ([0d72ab6](https://github.com/Solya-app/sparkless/commit/0d72ab6db863eded8a5fe735a4d92a09e2311a06))
-* F.mean() on string columns - coerce to numeric (fixes [#437](https://github.com/Solya-app/sparkless/issues/437)) ([#455](https://github.com/Solya-app/sparkless/issues/455)) ([30721c6](https://github.com/Solya-app/sparkless/commit/30721c64fbd33040d48adab60ee15546df58e52c)), closes [#442](https://github.com/Solya-app/sparkless/issues/442) [#429](https://github.com/Solya-app/sparkless/issues/429)
-* leftsemi join incorrectly returns right-side columns (fixes [#438](https://github.com/Solya-app/sparkless/issues/438)) ([42f17ff](https://github.com/Solya-app/sparkless/commit/42f17ffe29d09d067749279eb458dc4cd2a42fd0))
-* **readme:** mark repo deprecated and point to robin-sparkless ([f52ebf7](https://github.com/Solya-app/sparkless/commit/f52ebf70598bb2a9176e0eb3666fb58a1b0302c0))
-* resolve 155 of 186 failing unit tests ([55ee6d2](https://github.com/Solya-app/sparkless/commit/55ee6d29fccdedd314d92d22c49d8f2a0eb43eb9))
-* resolve 32 of 39 parity test failures (7 remaining) ([dc550c4](https://github.com/Solya-app/sparkless/commit/dc550c44caacb9a535469d589952315f107e966c))
-* resolve additional test failures (down to 26 remaining) ([b95447b](https://github.com/Solya-app/sparkless/commit/b95447be7a1d7f7508b77a39d5d3f0d8263aedde))
-* resolve all 28 mypy type errors, align pre-commit with CI ([89ae797](https://github.com/Solya-app/sparkless/commit/89ae79748f9c6480e540f565277cd3f645bfb707))
-* resolve all remaining test failures — 917/917 tests pass ([677d677](https://github.com/Solya-app/sparkless/commit/677d677ee377df3a29d5770645153512a8501640))
-* resolve comparison bug with nested ColumnOperations in filter ([262b357](https://github.com/Solya-app/sparkless/commit/262b357e4b5189a72d52cf95c7fa3df609fedcfc))
-* resolve Rust CI failures (cargo fmt + clippy) ([e3538f1](https://github.com/Solya-app/sparkless/commit/e3538f15e673ae9998dc28e8b28d83f01136ef47))
-* revert lazy.py agent changes that caused regressions, keep other fixes ([cff2393](https://github.com/Solya-app/sparkless/commit/cff2393b5ac3a557babddbb2849cdb467afdf539))
-* **robin:** set Row schema in collect(); unskip 3 case-variation tests ([786d578](https://github.com/Solya-app/sparkless/commit/786d578515f009e8a9aa7ff1afe31d4414381420))
-* **sparkless:** active session, F.* wrapping, categorization; add robin-sparkless issue scripts ([afbbd9c](https://github.com/Solya-app/sparkless/commit/afbbd9cb9c4450cccc16249b6a3c017b0711fb91))
-* **types:** resolve mypy errors in MERGE executor ([8b56d17](https://github.com/Solya-app/sparkless/commit/8b56d17347b8b7bc2142d4ba2d2e6b0595298c4d))
-* **types:** resolve mypy type errors in executor.py ([87b198d](https://github.com/Solya-app/sparkless/commit/87b198de2834f6267d889f649ed621dfd29fd3a7))
-* Use environment variable for version in changelog extraction ([a8c9dd2](https://github.com/Solya-app/sparkless/commit/a8c9dd2ae79dd8b9a483b590d0f97bdfd3918a48))
-* use float() for string coercion (PySpark parity), add robust tests ([027c222](https://github.com/Solya-app/sparkless/commit/027c222839c4b5eaa222564ae76f9f3e4514b82e))
-* Use github.ref_name for tag reference in release creation ([890ce37](https://github.com/Solya-app/sparkless/commit/890ce37735eb0ebd5e5aa43093f2a834c02ff4aa))
-
+- add xxhash as core dependency for PySpark-compatible hashing ([86e38d2](https://github.com/Solya-app/sparkless/commit/86e38d249e1e9ac6a4b94ff2e2232c0db7f97e1e))
+- additional test fixes from parallel agents ([3bfcbdf](https://github.com/Solya-app/sparkless/commit/3bfcbdf86bcc326058617760f4c892a6a24886da))
+- agents fix window arithmetic, isin, UDF filter, explode, etc (10 remaining) ([47a0ea4](https://github.com/Solya-app/sparkless/commit/47a0ea41f9eacc73254da25336bec181ea2cb871))
+- apply ruff format to fix CI lint-and-type job ([9bc82be](https://github.com/Solya-app/sparkless/commit/9bc82be9a0c9b06ab1116b0a493d84737ac78cda))
+- background agents fix withField, create_map union, array ops (17 remaining) ([59c594e](https://github.com/Solya-app/sparkless/commit/59c594ea6113215c58048297d0459d981b739419))
+- date_trunc for date objects, down to 24 remaining failures ([0d72ab6](https://github.com/Solya-app/sparkless/commit/0d72ab6db863eded8a5fe735a4d92a09e2311a06))
+- F.mean() on string columns - coerce to numeric (fixes [#437](https://github.com/Solya-app/sparkless/issues/437)) ([#455](https://github.com/Solya-app/sparkless/issues/455)) ([30721c6](https://github.com/Solya-app/sparkless/commit/30721c64fbd33040d48adab60ee15546df58e52c)), closes [#442](https://github.com/Solya-app/sparkless/issues/442) [#429](https://github.com/Solya-app/sparkless/issues/429)
+- leftsemi join incorrectly returns right-side columns (fixes [#438](https://github.com/Solya-app/sparkless/issues/438)) ([42f17ff](https://github.com/Solya-app/sparkless/commit/42f17ffe29d09d067749279eb458dc4cd2a42fd0))
+- **readme:** mark repo deprecated and point to robin-sparkless ([f52ebf7](https://github.com/Solya-app/sparkless/commit/f52ebf70598bb2a9176e0eb3666fb58a1b0302c0))
+- resolve 155 of 186 failing unit tests ([55ee6d2](https://github.com/Solya-app/sparkless/commit/55ee6d29fccdedd314d92d22c49d8f2a0eb43eb9))
+- resolve 32 of 39 parity test failures (7 remaining) ([dc550c4](https://github.com/Solya-app/sparkless/commit/dc550c44caacb9a535469d589952315f107e966c))
+- resolve additional test failures (down to 26 remaining) ([b95447b](https://github.com/Solya-app/sparkless/commit/b95447be7a1d7f7508b77a39d5d3f0d8263aedde))
+- resolve all 28 mypy type errors, align pre-commit with CI ([89ae797](https://github.com/Solya-app/sparkless/commit/89ae79748f9c6480e540f565277cd3f645bfb707))
+- resolve all remaining test failures — 917/917 tests pass ([677d677](https://github.com/Solya-app/sparkless/commit/677d677ee377df3a29d5770645153512a8501640))
+- resolve comparison bug with nested ColumnOperations in filter ([262b357](https://github.com/Solya-app/sparkless/commit/262b357e4b5189a72d52cf95c7fa3df609fedcfc))
+- resolve Rust CI failures (cargo fmt + clippy) ([e3538f1](https://github.com/Solya-app/sparkless/commit/e3538f15e673ae9998dc28e8b28d83f01136ef47))
+- revert lazy.py agent changes that caused regressions, keep other fixes ([cff2393](https://github.com/Solya-app/sparkless/commit/cff2393b5ac3a557babddbb2849cdb467afdf539))
+- **robin:** set Row schema in collect(); unskip 3 case-variation tests ([786d578](https://github.com/Solya-app/sparkless/commit/786d578515f009e8a9aa7ff1afe31d4414381420))
+- **sparkless:** active session, F.\* wrapping, categorization; add robin-sparkless issue scripts ([afbbd9c](https://github.com/Solya-app/sparkless/commit/afbbd9cb9c4450cccc16249b6a3c017b0711fb91))
+- **types:** resolve mypy errors in MERGE executor ([8b56d17](https://github.com/Solya-app/sparkless/commit/8b56d17347b8b7bc2142d4ba2d2e6b0595298c4d))
+- **types:** resolve mypy type errors in executor.py ([87b198d](https://github.com/Solya-app/sparkless/commit/87b198de2834f6267d889f649ed621dfd29fd3a7))
+- Use environment variable for version in changelog extraction ([a8c9dd2](https://github.com/Solya-app/sparkless/commit/a8c9dd2ae79dd8b9a483b590d0f97bdfd3918a48))
+- use float() for string coercion (PySpark parity), add robust tests ([027c222](https://github.com/Solya-app/sparkless/commit/027c222839c4b5eaa222564ae76f9f3e4514b82e))
+- Use github.ref_name for tag reference in release creation ([890ce37](https://github.com/Solya-app/sparkless/commit/890ce37735eb0ebd5e5aa43093f2a834c02ff4aa))
 
 ### Features
 
-* add Delta Lake Time Travel support to SQL parser ([#11](https://github.com/Solya-app/sparkless/issues/11)) ([c515e63](https://github.com/Solya-app/sparkless/commit/c515e63d05bbfee0b59410773c511625cfb84f85))
-* add semantic-release with Azure Artifacts publishing ([4bd853f](https://github.com/Solya-app/sparkless/commit/4bd853fce1e3ad369a967dfa9c58a362387b8738))
-* implement all P0 and P1 items from TODO-2.md ([de83907](https://github.com/Solya-app/sparkless/commit/de83907ea0328d05d71f5f043e98b65e19267fb2)), closes [#1](https://github.com/Solya-app/sparkless/issues/1) [#2](https://github.com/Solya-app/sparkless/issues/2) [#3](https://github.com/Solya-app/sparkless/issues/3) [#4](https://github.com/Solya-app/sparkless/issues/4) [#5](https://github.com/Solya-app/sparkless/issues/5) [#6](https://github.com/Solya-app/sparkless/issues/6) [#7](https://github.com/Solya-app/sparkless/issues/7) [#8](https://github.com/Solya-app/sparkless/issues/8) [#9](https://github.com/Solya-app/sparkless/issues/9) [#13](https://github.com/Solya-app/sparkless/issues/13) [#14](https://github.com/Solya-app/sparkless/issues/14)
-* implement all P2 items from TODO-2.md ([cf069dc](https://github.com/Solya-app/sparkless/commit/cf069dca6a261bca694de872ca87ab79b1d41fe1)), closes [#15](https://github.com/Solya-app/sparkless/issues/15) [#16](https://github.com/Solya-app/sparkless/issues/16) [#19](https://github.com/Solya-app/sparkless/issues/19) [#20](https://github.com/Solya-app/sparkless/issues/20)
-* resolve TODO.md limitation [#1](https://github.com/Solya-app/sparkless/issues/1) — alias-based column references in joins ([333bb54](https://github.com/Solya-app/sparkless/commit/333bb544a897b45525ca42cd3a2f0c594049946f))
-* resolve TODO.md limitation [#3](https://github.com/Solya-app/sparkless/issues/3) — aggregations in select ([f423ca6](https://github.com/Solya-app/sparkless/commit/f423ca67cde42834cad2bde23bc3be6249d9c0c0))
-* resolve TODO.md limitations [#2](https://github.com/Solya-app/sparkless/issues/2), [#5](https://github.com/Solya-app/sparkless/issues/5), and partial [#3](https://github.com/Solya-app/sparkless/issues/3) ([c4e8193](https://github.com/Solya-app/sparkless/commit/c4e81930497f9cca43ae0bb20e7c8e3b619b9672))
-* **robin:** Column conversion, F.* stubs, agg aliases; remove test skips; analysis ([1fb8887](https://github.com/Solya-app/sparkless/commit/1fb88872a88be5e4a1749e5bdf223b0c00c5421c))
-* **robin:** Sparkless changes for robin-sparkless integration ([21134a6](https://github.com/Solya-app/sparkless/commit/21134a6364572776a16bb7546c204ae0dde4591a))
-* **sql:** add complex MERGE patterns support ([5cf575f](https://github.com/Solya-app/sparkless/commit/5cf575f112308542c58362ad064d00a06863cfb4))
-* **sql:** add complex MERGE patterns support ([#322](https://github.com/Solya-app/sparkless/issues/322)) ([cc44e33](https://github.com/Solya-app/sparkless/commit/cc44e33ca85ece7780932f84c4346bf185a6fcf9))
-* **sql:** add DESCRIBE DETAIL support for Delta tables ([cddb660](https://github.com/Solya-app/sparkless/commit/cddb6601fc167b1c7aab0c7154ea8b04aacfb154))
+- add Delta Lake Time Travel support to SQL parser ([#11](https://github.com/Solya-app/sparkless/issues/11)) ([c515e63](https://github.com/Solya-app/sparkless/commit/c515e63d05bbfee0b59410773c511625cfb84f85))
+- add semantic-release with Azure Artifacts publishing ([4bd853f](https://github.com/Solya-app/sparkless/commit/4bd853fce1e3ad369a967dfa9c58a362387b8738))
+- implement all P0 and P1 items from TODO-2.md ([de83907](https://github.com/Solya-app/sparkless/commit/de83907ea0328d05d71f5f043e98b65e19267fb2)), closes [#1](https://github.com/Solya-app/sparkless/issues/1) [#2](https://github.com/Solya-app/sparkless/issues/2) [#3](https://github.com/Solya-app/sparkless/issues/3) [#4](https://github.com/Solya-app/sparkless/issues/4) [#5](https://github.com/Solya-app/sparkless/issues/5) [#6](https://github.com/Solya-app/sparkless/issues/6) [#7](https://github.com/Solya-app/sparkless/issues/7) [#8](https://github.com/Solya-app/sparkless/issues/8) [#9](https://github.com/Solya-app/sparkless/issues/9) [#13](https://github.com/Solya-app/sparkless/issues/13) [#14](https://github.com/Solya-app/sparkless/issues/14)
+- implement all P2 items from TODO-2.md ([cf069dc](https://github.com/Solya-app/sparkless/commit/cf069dca6a261bca694de872ca87ab79b1d41fe1)), closes [#15](https://github.com/Solya-app/sparkless/issues/15) [#16](https://github.com/Solya-app/sparkless/issues/16) [#19](https://github.com/Solya-app/sparkless/issues/19) [#20](https://github.com/Solya-app/sparkless/issues/20)
+- resolve TODO.md limitation [#1](https://github.com/Solya-app/sparkless/issues/1) — alias-based column references in joins ([333bb54](https://github.com/Solya-app/sparkless/commit/333bb544a897b45525ca42cd3a2f0c594049946f))
+- resolve TODO.md limitation [#3](https://github.com/Solya-app/sparkless/issues/3) — aggregations in select ([f423ca6](https://github.com/Solya-app/sparkless/commit/f423ca67cde42834cad2bde23bc3be6249d9c0c0))
+- resolve TODO.md limitations [#2](https://github.com/Solya-app/sparkless/issues/2), [#5](https://github.com/Solya-app/sparkless/issues/5), and partial [#3](https://github.com/Solya-app/sparkless/issues/3) ([c4e8193](https://github.com/Solya-app/sparkless/commit/c4e81930497f9cca43ae0bb20e7c8e3b619b9672))
+- **robin:** Column conversion, F.\* stubs, agg aliases; remove test skips; analysis ([1fb8887](https://github.com/Solya-app/sparkless/commit/1fb88872a88be5e4a1749e5bdf223b0c00c5421c))
+- **robin:** Sparkless changes for robin-sparkless integration ([21134a6](https://github.com/Solya-app/sparkless/commit/21134a6364572776a16bb7546c204ae0dde4591a))
+- **sql:** add complex MERGE patterns support ([5cf575f](https://github.com/Solya-app/sparkless/commit/5cf575f112308542c58362ad064d00a06863cfb4))
+- **sql:** add complex MERGE patterns support ([#322](https://github.com/Solya-app/sparkless/issues/322)) ([cc44e33](https://github.com/Solya-app/sparkless/commit/cc44e33ca85ece7780932f84c4346bf185a6fcf9))
+- **sql:** add DESCRIBE DETAIL support for Delta tables ([cddb660](https://github.com/Solya-app/sparkless/commit/cddb6601fc167b1c7aab0c7154ea8b04aacfb154))
 
 # Changelog
 
@@ -173,6 +170,7 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 ## 3.31.0 — 2026-02-05
 
 ### Added
+
 - **Robin (robin-sparkless) optional backend** — Use the Rust/Polars engine as an optional Sparkless backend.
   - Optional dependency: `pip install sparkless[robin]` or `pip install robin-sparkless`; `BackendFactory` only lists and creates the robin backend when the package is installed.
   - `BackendFactory._robin_available()` (cached); robin included in `list_available_backends()` only when available; `create_storage_backend` / `create_materializer` / `create_export_backend` raise a clear `ValueError` with install instructions when robin is selected but not installed.
@@ -185,10 +183,12 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 - **Tests** — `tests/unit/backend/test_robin_optional.py`: when robin is not available, `list_available_backends()` excludes robin and `create_*("robin")` raise `ValueError` with install hint.
 
 ### Documentation
+
 - **backend_selection.md** — Robin optional backend, install steps, and "Running tests with a specific backend" (e.g. `SPARKLESS_TEST_BACKEND=robin bash tests/run_all_tests.sh`).
 - **pytest_integration.md** — "Running tests with the Robin backend" and env vars; note that missing robin causes test failures (no silent skip).
 
 ### Fixed
+
 - **Issue #448** - `dropDuplicates()` and `distinct()` no longer raise `TypeError: unhashable type: 'list'` when the DataFrame contains list-typed (array) or dict-typed (struct) columns. Added `_make_hashable()` helper to recursively convert unhashable values before set membership checks in `TransformationService`, `TransformationOperations`, and lazy evaluation.
 - **Issue #451** - `dropDuplicates()` with struct column after materialization no longer raises `TypeError: unhashable type: 'dict'`. Same fix as #448: `_make_hashable()` handles struct (dict) columns. Added regression tests for the materialized-struct scenario.
 - **Issue #453** - `alias().cast()` in `withColumn()` no longer raises `SparkColumnNotFoundError`. `ColumnValidator.validate_expression_columns` now validates `_original_column` for aliased columns (same pattern as #435 fix for `select()`).
@@ -204,6 +204,7 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 ## 3.31.0 — 2026-02-05
 
 ### Added
+
 - **Robin (robin-sparkless) optional backend** — Use the Rust/Polars engine as an optional Sparkless backend.
   - Optional dependency: `pip install sparkless[robin]` or `pip install robin-sparkless`; `BackendFactory` only lists and creates the robin backend when the package is installed.
   - `BackendFactory._robin_available()` (cached); robin included in `list_available_backends()` only when available; `create_storage_backend` / `create_materializer` / `create_export_backend` raise a clear `ValueError` with install instructions when robin is selected but not installed.
@@ -216,6 +217,7 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 - **Tests** — `tests/unit/backend/test_robin_optional.py`: when robin is not available, `list_available_backends()` excludes robin and `create_*("robin")` raise `ValueError` with install hint.
 
 ### Documentation
+
 - **backend_selection.md** — Robin optional backend, install steps, and "Running tests with a specific backend" (e.g. `SPARKLESS_TEST_BACKEND=robin bash tests/run_all_tests.sh`).
 - **pytest_integration.md** — "Running tests with the Robin backend" and env vars; note that missing robin causes test failures (no silent skip).
 
@@ -224,6 +226,7 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 ## 3.30.0 — 2026-02-05
 
 ### Fixed
+
 - **Issue #424** - `ColumnOperation.alias()` now accepts multiple positional arguments (e.g. `F.posexplode("Values").alias("Value1", "Value2")`), matching PySpark. Previously raised `TypeError: ... takes 2 positional arguments but 3 were given`.
   - `ColumnOperation.alias(*alias_names)` stores `_alias_name` (first) and `_alias_names` (tuple); Polars operation executor uses `_alias_names` when present to name both posexplode output columns.
   - Added `test_posexplode_alias_two_names_select` and related tests in `tests/test_issue_366_alias_posexplode.py`.
@@ -248,10 +251,12 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
   - Added robust tests: chained union, empty DataFrames, nulls, unionAll, select/orderBy/filter after union.
 
 ### Changed
+
 - Exception handling: added DEBUG logging for broad `except Exception` fallbacks in `expression_translator` (case sensitivity) and `operation_executor` (parse_ddl_schema, cast/to_date fallbacks, join row evaluation) to aid debugging.
 - SQL executor: use `catalog.get_storage_backend()` instead of `catalog._storage` (removes 6 `type: ignore`); transformations: narrowed redundant-cast type ignores.
 
 ### Documentation
+
 - **known_issues.md**: Documented Delta Table unsupported operations (NotImplementedError paths), `DataFrame.explain()` codegen/cost not implemented, and Deprecations list (errors module, Functions(), LazyEvaluationEngine heuristics, function aliases).
 - **testing_patterns.md**: Added "Test layout and skips" (PySpark-only, Delta, optional deps, backend-specific).
 - **TODO.md**: Added "Current focus" backlog (array_distinct, exception handling, type-ignore reduction).
@@ -261,15 +266,18 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 ## 3.29.0 — 2026-02-04
 
 ### Added
+
 - Logical plan serialization and Polars plan interpreter; optional `materialize_from_plan` backend contract and Robin backend stub.
 - Documentation for logical plan format in `docs/internal/logical_plan_format.md`.
 
 ### Changed
+
 - `unionAll` is a deprecated alias for `union` (no FutureWarning); call sites in tests/tools use `union()`.
 - Polars LazyFrame schema access uses `collect_schema()` to avoid PerformanceWarning.
 - Polars join uses `how='full'` instead of deprecated `how='outer'`.
 
 ### Fixed
+
 - Plan interpreter no longer treats unknown unary ops (e.g. UDF) as pass-through; raises so materializer fallback runs (fixes `test_udf_empty_string` under parallel tests).
 - **Issue #406** - Combining aggregate + cast to `DecimalType` + drop no longer raises `ValueError: Unsupported Polars dtype: Decimal(...)`
   - Type mapper now maps Sparkless `DecimalType` to Polars `pl.Decimal(precision, scale)` and handles `pl.Decimal` when converting Polars schema back to Sparkless types.
@@ -280,10 +288,12 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 - Lazy and Polars backends: replaced broad `except Exception` with `_EVALUATION_FAILURE_EXCEPTIONS` or specific types (e.g. `ValueError`, `SyntaxError`) in evaluation/transform fallbacks so real bugs are not swallowed.
 
 ### Changed
+
 - **array_distinct**: Documented as unsupported in Polars backend in `docs/known_issues.md` and function docstring; API retained for compatibility.
 - CI: lint-and-type job now runs `python -m ruff` and `python -m mypy` so project dev dependencies are used; ruff pinned to `>=0.15.0,<0.16` for consistent formatting.
 
 ### Documentation
+
 - New troubleshooting guide (`docs/guides/troubleshooting.md`): native dependency crashes, pure-Python fallbacks, session/catalog, test backends.
 - Getting started: added "Advanced: Session-aware literals and schema tracking"; SQL operations guide references session-aware execution.
 - Configuration guide: added "Performance knobs" (lazy/eager, logical plan, backend, profiling).
@@ -297,11 +307,12 @@ Sparkless v4 is **Robin-only**: execution is entirely via the [robin-sparkless](
 All changes since 3.27.1 are included in this release.
 
 ### Fixed
+
 - **CI** - Applied ruff format to fix lint-and-type job (expression_translator, operation_executor, error_simulation, test files)
 - **Issue #398** - `withField` with Window function (e.g. `F.count("*").over(Window.partitionBy("id"))`) now evaluates correctly; previously stored `WindowFunction` object and `select(edge.field)` failed
   - Don't wrap WindowFunction in Literal in Column.withField
   - ExpressionEvaluator: evaluate WindowFunction when inside withField (pass full_data, row_index)
-  - WindowFunction.evaluate: add `_evaluate_count` for count(*) over window
+  - WindowFunction.evaluate: add `_evaluate_count` for count(\*) over window
 - **PySpark parity** - `agg(F.count("*"))` now produces column name `count(1)` (matches PySpark); `GroupedData.count()` shorthand still produces `count` via alias
 - **Issue #397** - `df.groupBy(F.col('Name').alias('Key')).agg(F.sum('Value'))` no longer raises `SparkColumnNotFoundError: cannot resolve 'Key'`
   - groupBy validated output alias instead of underlying column; now resolves (base_col, output_name) and validates base_col exists
@@ -310,7 +321,7 @@ All changes since 3.27.1 are included in this release.
   - Validation checked source column type (LongType) and ignored cast-to-string; fix: use `actual_input_type` (StringType after cast) for to_date check, and accept `isinstance(cast_target, StringType)` for StringType() instances
 - **Issue #395** - `df.filter("status == 'Y' and Name is not null")` no longer raises `bitand operation not supported for dtype str`
   - Root cause: operator precedence - IS NULL was parsed before AND, so whole expr matched "X is not null" with X = "status == 'Y' and Name"; also equality used "=" splitting which broke "a == 'Y'"
-  - Fix: parse AND/OR before IS NULL; use "==" for equality split; add string-literal awareness to _split_logical_operator
+  - Fix: parse AND/OR before IS NULL; use "==" for equality split; add string-literal awareness to \_split_logical_operator
 - **Issue #394** - `df.filter("Name like '%TEST%'")` and `df.filter("Name not like '%TEST%'")` no longer raise `ParseException: Invalid identifier or literal`
   - PySpark supports LIKE/NOT LIKE in F.expr() and filter string expressions; SQLExprParser now parses these
   - Fixed SQL LIKE semantics: use full-string match (anchor regex with ^ $) so `_` wildcard matches exactly one char (was substring match)
@@ -326,11 +337,12 @@ All changes since 3.27.1 are included in this release.
   - PySpark: `createDataFrame(pandas_df)` preserves column order as-given; `createDataFrame(list_of_dicts)` sorts columns alphabetically. Sparkless now does both: DataFrameFactory captures Pandas column order before converting to list of dicts; SchemaInferenceEngine accepts optional `column_order` and uses it for schema and normalized data order.
 
 ### Added
+
 - **Issue #398 tests** - `tests/test_issue_398_withfield_window.py` with 9 tests (both backends)
 - **Issue #397 tests** - `tests/test_issue_397_groupby_alias.py` with 10 tests (both backends)
 - **Issue #396 tests** - `tests/test_issue_396_to_date_cast.py` with 8 tests (select, nulls, filter, IntegerType, both backends)
 - **Issue #395 tests** - `tests/test_issue_395_filter_and_string_expr.py` with 13 tests (AND inside string literal, OR+is null, F.expr, select, both backends)
-- **Issue #394 tests** - `tests/test_issue_394_like_in_expr.py` with 15 tests (like/not like, AND/OR, prefix/suffix/middle %, multiple _, nulls, F.expr, both backends)
+- **Issue #394 tests** - `tests/test_issue_394_like_in_expr.py` with 15 tests (like/not like, AND/OR, prefix/suffix/middle %, multiple \_, nulls, F.expr, both backends)
 - **Issue #393 tests** - `tests/test_issue_393_sum_string_column.py` with 10 tests (sum/avg on string columns, with_show, nulls, running sum, partitions, decimals, select, both backends)
 - **Issue #392 tests** - `tests/test_issue_392_window_sum_peers.py` with 10 tests (both sparkless and PySpark backends)
   - sum/avg with orderBy subset of partitionBy (peers), orderBy differs (running sum), F.col().desc(), single row, nulls, multiple order cols
@@ -340,6 +352,7 @@ All changes since 3.27.1 are included in this release.
   - Polars expression translator now parses string cast types `Decimal(X,Y)` / `decimal(X,Y)` (case insensitive) and maps to DecimalType(precision, scale), then to Polars Float64 (Polars has no exact decimal type)
 
 ### Added
+
 - **Issue #371 tests** - `tests/test_issue_371_cast_decimal.py` with 9 tests (PySpark and mock backends)
   - withColumn + cast("Decimal(10,0)") (exact issue scenario), cast("decimal(10,0)") lowercase; cast in select; Decimal(5,2)/Decimal(38,2); cast after filter; nulls preserved; float to Decimal(10,1); show then collect; Decimal(1,0)
 - **Issue #370** - `df.filter("Values in ('20')")` and `df.filter("Values in (20)")` no longer raise `ParseException: Invalid identifier or literal: Values in ('20')`
@@ -347,6 +360,7 @@ All changes since 3.27.1 are included in this release.
   - Expression translator: isin coercion accepts String/Utf8 dtype by name for schema dtypes; fallback when value is numeric list and column type unknown (assume string column)
 
 ### Added
+
 - **Issue #370 tests** - `tests/test_issue_370_filter_in_string.py` with 5 tests
   - filter("Values in ('20')"), filter("Values in (20)") [skip when coercion not available], show(), equality sanity, multiple literals
 - **Issue #369** - `~F.col("Values").isin([20, 30])` on a string column no longer raises Polars `InvalidOperationError: 'is_in' cannot check for List(Int64) values in String data`
@@ -355,6 +369,7 @@ All changes since 3.27.1 are included in this release.
   - PySpark supports this comparison; Sparkless now matches by coercing the right-hand list to the column's type
 
 ### Added
+
 - **Issue #369 tests** - `tests/test_issue_369_isin_negation.py` with 4 tests
   - Negation isin string column + int list (exact scenario), show(), positive isin same types, negation isin string-to-string
 - **Issue #367** - `F.array()` and `F.array([])` now return empty array `[]` (PySpark parity)
@@ -364,6 +379,7 @@ All changes since 3.27.1 are included in this release.
 - **Issue #367 (PySpark parity)** - `F.array(())` now raises `ValueError` to match PySpark (PySpark rejects empty tuple; use `F.array()` or `F.array([])` for an empty array)
 
 ### Added
+
 - **Issue #367 tests** - `tests/test_issue_367_array_empty.py` with 13 tests
   - F.array() and F.array([]), show(), in select, equivalent, after filter, in union; F.array(()) raises; multiple empty arrays, different data types, computed columns, join
 - **Issue #365** - `F.create_map([])` now returns empty map `{}` (PySpark parity)
@@ -372,6 +388,7 @@ All changes since 3.27.1 are included in this release.
   - Related to #356 (create_map() with no args already supported)
 
 ### Added
+
 - **Issue #365 tests** - `tests/unit/test_create_map.py`: 1 core + 10 robust tests for `create_map([])` / `create_map(())`
   - Core: `test_create_map_empty_list_returns_empty_map`
   - Robust: empty tuple, in select, different data types, after filter, equivalent to `create_map()`, multiple in select, in union, exact issue scenario (show), with computed columns, in join
@@ -382,6 +399,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `IllegalArgumentException: Data must be a list of dictionaries, tuples, lists, Row objects, or a Pandas DataFrame`
 
 ### Added
+
 - **Issue #361 tests** - `tests/test_issue_361_createDataFrame_rdd.py` with 5 tests
   - Exact issue scenario, show() output, empty DataFrame (backend-appropriate StructType), single row, schema order preservation
   - Tests use `spark` fixture; run in both Sparkless and PySpark mode (`MOCK_SPARK_TEST_BACKEND=pyspark`)
@@ -391,6 +409,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `ValueError: Unsupported function: input_file_name`
 
 ### Added
+
 - **Issue #360 tests** - `tests/test_issue_360_input_file_name.py` with 12 tests (3 core + 9 robust)
   - Tests use `spark` fixture; run in both Sparkless and PySpark mode (`MOCK_SPARK_TEST_BACKEND=pyspark`)
   - Covers withColumn, select, empty DataFrame, filter/select chaining, schema preservation, alias
@@ -411,23 +430,25 @@ All changes since 3.27.1 are included in this release.
 - **Mypy** - Removed unused `type: ignore` comments and redundant casts in functions base, dataframe grouped base, and SQL executor
 
 ### Added
+
 - **Issue #359 tests** - `tests/test_issue_359_na_drop.py` with 22 tests (8 core + 14 robust)
   - Tests use `spark` fixture; run in both Sparkless and PySpark mode (`MOCK_SPARK_TEST_BACKEND=pyspark`)
   - Covers empty DataFrame, `how`/`thresh`/`subset` edge cases, chaining with filter/select, invalid column raise, schema preservation
 
-
-
 ### Changed
+
 - **PySpark parity** - Removed Sparkless-only APIs to match PySpark behavior:
   - `Row.get(key, default)` removed; use `row[key]` or `row.field_name` or the internal helper `get_row_value(row, key, default)` where applicable
   - `Column.alias(*names)` removed; use `Column.alias(name)` (single argument only)
 - Internal usage of `row.get()` replaced with `get_row_value()` across the codebase
 
 ### Added
+
 - Robust tests for the above fixes (F.DataFrame, getField, alias/posexplode, join aliased columns, round string, SQL CTE with JOIN)
 - Follow-up issues for unfixed edge cases: #376 (multi-JOIN SELECT), #377 (GROUP BY with table prefix), #378 (round string with whitespace), #379 (join SELECT with table prefix), #380 (join compound condition row count), #381 (SQL WHERE on join), #382 (self-join row count)
 
 ### Testing
+
 - All tests passing with `pytest -n 10` (2389 passed, 20 skipped)
 - `ruff format`, `ruff check`, and `mypy sparkless tests` — all pass (501 source files, Python 3.9 and 3.11)
 - New issue tests verified in PySpark mode (`MOCK_SPARK_TEST_BACKEND=pyspark`)
@@ -435,6 +456,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.27.1 — 2026-01-26
 
 ### Fixed
+
 - **BUG-002** - Fixed Column aggregate methods to return ColumnOperation wrapping AggregateFunction
   - `Column.sum()`, `Column.avg()`, `Column.max()`, `Column.min()`, `Column.stddev()`, and `Column.variance()` now return `ColumnOperation` objects that internally wrap `AggregateFunction` instances
   - Matches the pattern used by `AggregateFunctions.sum()`, `AggregateFunctions.avg()`, etc.
@@ -455,6 +477,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `QueryExecutionException: cannot resolve 'ELSE ... END'` errors
 
 ### Added
+
 - **Code Organization** - Split large monolithic files into specialized modules for better maintainability
   - Created `sparkless/backend/polars/translators/` module with specialized translators:
     - `StringTranslator` - Handles string operation translations (substring, regexp_replace, regexp_extract, split, rlike)
@@ -471,6 +494,7 @@ All changes since 3.27.1 are included in this release.
   - `is_column_expression()` - Type checking helper for column expressions
 
 ### Changed
+
 - **Exception Handling** - Improved exception specificity in expression translator
   - Replaced generic `except Exception:` blocks with specific exception types
   - Now catches `pl.exceptions.ComputeError`, `TypeError`, and `ValueError` explicitly
@@ -492,6 +516,7 @@ All changes since 3.27.1 are included in this release.
   - All files pass ruff format and ruff check
 
 ### Testing
+
 - All 2,176 tests passing (22 skipped)
 - All aggregate function tests passing (57 tests)
 - All SQL parsing tests passing (62 tests for aggregate and case_when)
@@ -499,6 +524,7 @@ All changes since 3.27.1 are included in this release.
 - Comprehensive test coverage for all bug fixes
 
 ### Technical Details
+
 - Updated `PolarsExpressionTranslator` to delegate to specialized translators for string, type, and arithmetic operations
 - Updated `ExpressionEvaluator` to delegate CASE WHEN evaluation to `ConditionalEvaluator`
 - Enhanced SQL parser with improved column and CASE WHEN parsing logic
@@ -508,6 +534,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.27.0 — 2026-01-26
 
 ### Added
+
 - **Read the Docs Documentation** - Complete Sphinx-based documentation system for Read the Docs
   - Set up Sphinx configuration with Google-style docstring support (Napoleon extension)
   - Created comprehensive API documentation with autodoc for all modules
@@ -635,6 +662,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `AttributeError: 'float' object has no attribute 'name'` error
 
 ### Fixed
+
 - **Issue #355** - Fixed `unionByName` producing incorrect, duplicated results when the same DataFrame is used in two join branches (diamond dependency)
   - Fixed `unionByName` to properly materialize lazy operations before accessing data and schemas
   - When the same DataFrame is used in multiple branches (e.g., two different joins) and then combined via `unionByName`, sparkless now correctly materializes each branch's transformations before unioning
@@ -659,6 +687,7 @@ All changes since 3.27.1 are included in this release.
   - All tests pass in both Sparkless (mock) and PySpark modes, confirming full compatibility
   - Fixes issue where `unionByName` would return 6 rows instead of 3 when combining branches from the same source DataFrame
 - **Issue #330** - Join / union / orderBy after select with computed columns
+
   - Fixed `AttributeError: 'NoneType' object has no attribute 'collect'` when join, union, or orderBy followed a select that used computed columns (e.g. struct field alias)
   - When select includes computed columns, the Polars materializer keeps the result in `df_materialized` and sets `lazy_df = None`
   - The join, union, and orderBy branches previously always called `lazy_df.collect()` and never checked `df_materialized`
@@ -666,6 +695,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `test_struct_field_with_alias_with_join`, `test_struct_field_with_alias_with_union`, and `test_chained_operations_after_select` (Issue #297)
 
 - **Issue #339** - Column subscript with distinct and lazy evaluation
+
   - Fixed `test_column_subscript_with_distinct` where `extract_values` was `set()` (expected `{1, 3}`) when using `F.col("StructVal")["E1"]` with `select(...).distinct().collect()`
   - `distinct()` was executed eagerly on the base DataFrame, bypassing queued lazy operations (withColumn, select), so the computed `Extract-E1` column was missing
   - Updated `distinct()` in `TransformationService` and `TransformationOperations` to queue a `"distinct"` operation when there are pending lazy operations instead of executing eagerly
@@ -673,6 +703,7 @@ All changes since 3.27.1 are included in this release.
   - Fixed `original_schema` initialization in `PolarsMaterializer` when operations are present: use base schema inferred from data rather than projected schema, so union validation uses the correct column count (fixes `test_distinct_with_case_variations` regression)
 
 - **Documentation example tests (timeout)**
+
   - Fixed subprocess example tests (`test_basic_usage_runs`, `test_comprehensive_usage_runs`) timing out when run with pytest-xdist (parallel)
   - Skip these tests when `PYTEST_XDIST_WORKER` is set to avoid subprocess interference in parallel execution (same rationale as PySpark-mode skip)
   - Force fast mode for `basic_usage` via `MOCK_SPARK_EXAMPLES_FULL=0` in test env; increased subprocess timeout from 30s to 60s when tests run sequentially
@@ -700,17 +731,20 @@ All changes since 3.27.1 are included in this release.
   - All 16 tests now pass in both PySpark 3.5+ and mock-spark modes
   - Tests use appropriate schema types (PySpark types in PySpark mode, mock types in mock-spark mode) for cross-mode compatibility
 - **Window function alias extraction in Python evaluation path**
+
   - Fixed issue where Python-evaluated window functions (e.g., `percent_rank()`, `ntile()`) in `apply_select` were using default aliases (e.g., `percent_rank_window`) instead of user-defined aliases (e.g., `percentile`)
   - Updated alias extraction in Python evaluation path to use `original_col_for_alias` instead of the processed `col`, matching the non-Python path behavior
   - Fixes `test_window_function_multiply`, `test_window_function_rmul`, `test_window_function_chained_operations`, `test_ntile_with_arithmetic`, and `test_multiple_window_functions_with_arithmetic` tests that were returning `None` values
   - Ensures user-defined aliases are preserved when window functions fall back to Python evaluation
 
 - **UnboundLocalError in apply_select**
+
   - Fixed `UnboundLocalError: cannot access local variable 'had_python_window_functions'` that occurred when `apply_select` was called without Python window functions
   - Initialized `had_python_window_functions` before the conditional block to ensure it's always defined
   - Fixes 317 test failures that were caused by this error
 
 - **Issue #297** - Fixed column name resolution after join when columns differ only by case
+
   - Fixed `AnalysisException: Ambiguous column name` when selecting columns after a join where columns differ only by case (e.g., "name" vs "Name")
   - Updated `ColumnResolver.resolve_column_name()` to return the first matching column in case-insensitive scenarios instead of raising an exception, matching PySpark behavior
   - Modified `TransformationService.select()` to preserve the original requested column name (e.g., "NaMe") rather than replacing it with the resolved canonical name
@@ -722,6 +756,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `KeyError` when accessing Row objects with the requested column name after a join and select operation
 
 - **Issue #295** - Fixed `withColumnRenamed` to treat non-existent columns as no-op (matching PySpark behavior)
+
   - Fixed `SparkColumnNotFoundError` when trying to rename a non-existent column - now treated as a no-op, matching PySpark behavior
   - Modified `TransformationService.withColumnRenamed()` to return the DataFrame unchanged when the column doesn't exist
   - Modified `TransformationService.withColumnsRenamed()` to skip non-existent columns instead of raising an error (only renames existing columns)
@@ -730,6 +765,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes issue where `df.withColumnRenamed("Does-Not-Exist", "New-Name")` would raise an error instead of silently ignoring the operation
 
 - **Issue #296** - Fixed UDF decorator interface support (`@udf(DataType())` pattern)
+
   - Fixed `AttributeError: 'function' object has no attribute 'name'` when using `@udf(T.StringType())` decorator pattern
   - Updated `Functions.udf()` to correctly detect when a DataType instance is passed as the first positional argument (decorator pattern) and treat it as `returnType`
   - When `@udf(T.StringType())` is used, the DataType instance is now correctly recognized as `returnType` instead of being treated as the function parameter
@@ -746,6 +782,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes issue where `@udf(T.StringType())` decorator would raise an error instead of working correctly
 
 - **Issue #286** - Added arithmetic operators to `AggregateFunction` class
+
   - Added support for arithmetic operations on aggregate functions (e.g., `F.countDistinct("Value") - 1`), matching PySpark behavior
   - Implemented `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__mod__` and their reverse counterparts (`__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`, `__rmod__`) on `AggregateFunction` class
   - Updated `GroupedData._evaluate_column_expression()` to handle arithmetic operations on aggregate functions
@@ -756,6 +793,7 @@ All changes since 3.27.1 are included in this release.
   - Works with all aggregate functions: `count`, `sum`, `avg`, `max`, `min`, `countDistinct`, `stddev`, `variance`, etc.
 
 - **Issue #287** - Added `replace` method to `NAHandler` class
+
   - Added `df.na.replace()` method to match PySpark's `NAHandler.replace()` API
   - Supports dict mapping for value replacements (e.g., `{"A": "TypeA", "B": "TypeB"}`)
   - Supports single value replacement (e.g., `df.na.replace(1, 99)`)
@@ -768,6 +806,7 @@ All changes since 3.27.1 are included in this release.
   - Handles edge cases: None values, booleans, empty dicts/lists, special characters, unicode
 
 - **Issue #288** - Added arithmetic and logical operators to `CaseWhen` class
+
   - Added support for arithmetic operations on `CaseWhen` expressions (e.g., `F.when(...).otherwise(...) - F.when(...).otherwise(...)`), matching PySpark behavior
   - Implemented arithmetic operators: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__mod__` and their reverse counterparts (`__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`, `__rmod__`)
   - Implemented logical operators: `__or__` (bitwise OR), `__and__` (bitwise AND), `__invert__` (bitwise NOT)
@@ -782,6 +821,7 @@ All changes since 3.27.1 are included in this release.
   - Properly handles null values in operations
 
 - **Issue #289** - Added `struct` function support in Polars backend
+
   - Added support for `F.struct()` function to create struct-type columns from multiple columns, matching PySpark behavior
   - Implemented struct function translation in `PolarsExpressionTranslator._translate_function_call()`
   - Handles multiple columns (string names and Column objects)
@@ -795,6 +835,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `ValueError: Unsupported function: struct` error
 
 - **Issue #290** - Added support for UDFs with multiple arguments
+
   - Added support for UDFs (User Defined Functions) with multiple positional arguments, matching PySpark behavior
   - Modified `Functions.udf()` wrapper to accept `*cols` instead of single `col` parameter
   - Store all column arguments in `op._udf_cols` for backend processing
@@ -808,11 +849,12 @@ All changes since 3.27.1 are included in this release.
   - Properly handles null values, empty DataFrames, and mixed string/Column object inputs
   - Fixes `TypeError: apply_udf() takes 1 positional argument but 2 were given` error
 
-- **Issue #291** - Added support for power operator (**) between floats and Column/ColumnOperation
+- **Issue #291** - Added support for power operator (\*\*) between floats and Column/ColumnOperation
+
   - Added `__pow__` method to `ColumnOperatorMixin` for forward power operation (e.g., `col ** 2`)
   - Added `__rpow__` method to `ColumnOperatorMixin` for reverse power operation (e.g., `3.0 ** col` or `2 ** col`)
-  - Added "**" to binary operators list in `PolarsExpressionTranslator` to route it correctly
-  - Added "**" to arithmetic operations handling in `_coerce_for_arithmetic()`
+  - Added "\*\*" to binary operators list in `PolarsExpressionTranslator` to route it correctly
+  - Added "\*\*" to arithmetic operations handling in `_coerce_for_arithmetic()`
   - Uses Polars `pow()` function for power operations with proper null/infinity handling
   - Supports power operations with integers, floats, Column objects, and ColumnOperations
   - Works in various contexts: `withColumn`, `select`, `filter`, `groupBy().agg()`, `orderBy`, union
@@ -824,6 +866,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `TypeError: unsupported operand type(s) for ** or pow(): 'float' and 'Column'` error
 
 - **Issue #292** - Added support for look-around regex patterns in `rlike()` and related functions
+
   - Added look-around pattern detection for `rlike`, `regexp`, and `regexp_like` operations
   - Uses Python `re` module fallback when Polars doesn't support look-ahead/look-behind assertions
   - Detects patterns containing `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` assertions
@@ -836,6 +879,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes `polars.exceptions.ComputeError: regex error: look-around, including look-ahead and look-behind, is not supported` error
 
 - **Issue #293** - Fixed `explode()` and `explode_outer()` functions to properly explode arrays/lists into multiple rows
+
   - Fixed `F.explode()` to correctly expand array or map columns into new rows, matching PySpark behavior
   - Fixed `F.explode_outer()` to expand arrays while preserving rows with null/empty arrays (unlike regular `explode`)
   - Updated `PolarsOperationExecutor.apply_with_column()` to properly handle `explode` operations in `withColumn` and `select`
@@ -860,6 +904,7 @@ All changes since 3.27.1 are included in this release.
   - Fixes issue where `hour()`, `minute()`, and `second()` returned `None` for string timestamp columns
 
 ### Testing
+
 - Added comprehensive test suite for issue #297 (`tests/test_issue_297_join_different_case_select.py`)
   - Tests for different join types (inner, left, right, outer)
   - Tests for multiple ambiguous columns
@@ -869,14 +914,14 @@ All changes since 3.27.1 are included in this release.
   - Tests for operations after select (withColumn, drop)
   - Verification of single-match vs. multiple-match behavior
 - Added comprehensive test suite for issue #286 (`tests/test_issue_286_aggregate_function_arithmetic.py`)
-  - 26 test cases covering all arithmetic operations (+, -, *, /, %)
+  - 26 test cases covering all arithmetic operations (+, -, \*, /, %)
   - Tests for forward and reverse operations
   - Tests for chained arithmetic operations
   - Tests for null handling, floats, negative numbers, zero
   - Tests for division/modulo by zero (returns None)
   - Tests for min, stddev, variance aggregate functions
   - Tests for complex nested operations
-  - Tests for count(*), empty groups, large numbers
+  - Tests for count(\*), empty groups, large numbers
   - Tests for mixed aggregate functions
   - Tests for aliases and operator precedence
   - All tests pass in both Sparkless (mock) and PySpark backends
@@ -895,7 +940,7 @@ All changes since 3.27.1 are included in this release.
   - All tests pass in both Sparkless (mock) and PySpark backends
 - Added comprehensive test suite for issue #288 (`tests/test_issue_288_casewhen_operators.py`)
   - 27 test cases covering all arithmetic and logical operators on `CaseWhen` expressions
-  - Tests for all arithmetic operations (+, -, *, /, %)
+  - Tests for all arithmetic operations (+, -, \*, /, %)
   - Tests for bitwise operations (|, &, ~)
   - Tests for forward and reverse operations
   - Tests for chained arithmetic operations
@@ -936,9 +981,9 @@ All changes since 3.27.1 are included in this release.
   - Tests for edge cases: all null arguments, large number of columns, mixed types
   - All tests pass in both Sparkless (mock) and PySpark backends
 - Added comprehensive test suite for issue #291 (`tests/test_issue_291_power_operator_float_column.py`)
-  - 33 test cases covering all power operator (**) functionality
+  - 33 test cases covering all power operator (\*\*) functionality
   - Tests for float ** Column and float ** ColumnOperation (from issue examples)
-  - Tests for Column ** number (forward power operation)
+  - Tests for Column \*\* number (forward power operation)
   - Tests for integer ** Column, Column ** Column
   - Tests for nested expressions, chained operations, and mixed types
   - Tests for null handling, zero base/exponent, negative exponents
@@ -1011,6 +1056,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.31.0 — Unreleased
 
 ### Added
+
 - **Issue #189** - Implemented missing string and JSON functions for improved PySpark compatibility
   - Added `soundex()` function for phonetic string matching (Soundex algorithm)
   - Added `translate()` function for character-by-character string translation
@@ -1030,6 +1076,7 @@ All changes since 3.27.1 are included in this release.
   - All methods match the `GroupedData` API for consistency with PySpark
 
 ### Fixed
+
 - **Issue #279** - Added support for executing Python UDFs in the Polars backend
   - Fixed `ValueError: Unsupported function: udf` when applying `F.udf(...)` via `withColumn`
   - Supports single-argument and multi-argument UDFs
@@ -1048,6 +1095,7 @@ All changes since 3.27.1 are included in this release.
 - Fixed handling of empty pivot groups (returns `None` instead of `0`)
 
 ### Testing
+
 - Added comprehensive tests for issue #189 string/JSON functions
   - 8 new parity tests in `tests/parity/functions/test_string.py` for PySpark compatibility validation
   - 1 unit test in `tests/unit/functions/test_regexp_extract_all_189.py` for regex extraction
@@ -1065,6 +1113,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.30.0 — 2025-01-21
 
 ### Added
+
 - **Issue #266** - Added `rsd` parameter support to `approx_count_distinct()` function
   - Added optional `rsd` (relative standard deviation) parameter to `approx_count_distinct()` function
   - Matches PySpark API: `approx_count_distinct(column, rsd=0.01)`
@@ -1073,17 +1122,20 @@ All changes since 3.27.1 are included in this release.
   - Function name generation includes `rsd` parameter when provided: `approx_count_distinct(column, rsd=0.01)`
 
 ### Fixed
+
 - **Issue #266** - Fixed `approx_count_distinct()` returning `None` in Window functions
   - Added `approx_count_distinct` support to Window function handler
   - Window functions now correctly compute distinct counts instead of returning `None`
   - Fixes the issue where `F.approx_count_distinct("value", rsd=0.01).over(window)` returned `None`
 
 ### Testing
+
 - Added 7 unit tests covering backward compatibility, rsd parameter, different values, groupBy, and Window functions
 - Added 6 PySpark parity tests including the exact example from issue #266
 - All tests verify that Window functions no longer return `None` for `approx_count_distinct`
 
 ### Technical Details
+
 - Updated `AggregateFunction` class to store `rsd` attribute (similar to `ord_column`, `ignorenulls`)
 - Updated `AggregateFunctions.approx_count_distinct()` and `Functions.approx_count_distinct()` to accept `rsd` parameter
 - Enhanced function name generation in `_generate_name()` to include `rsd` when provided
@@ -1093,6 +1145,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.29.0 — 2025-01-21
 
 ### Added
+
 - **Issue #265** - Implemented `cast()` method for `AggregateFunction` objects
   - Added `cast()` method to `AggregateFunction` class, enabling type casting of aggregate function results
   - Supports casting aggregate results to different data types (string, int, long, double, float, boolean)
@@ -1103,6 +1156,7 @@ All changes since 3.27.1 are included in this release.
   - Cast operations are evaluated after aggregate computation, ensuring correct type conversion
 
 ### Fixed
+
 - Fixed `GroupedData.agg()` to correctly handle cast operations on aggregate functions
   - Detects when a `ColumnOperation` with "cast" operation wraps an `AggregateFunction`
   - Evaluates the aggregate function first, then applies the cast transformation
@@ -1110,12 +1164,14 @@ All changes since 3.27.1 are included in this release.
   - Handles both string type names (e.g., "string", "int") and `DataType` objects
 
 ### Testing
+
 - Added 7 unit tests covering basic functionality, return types, multiple aggregates, and null handling
 - Added 11 PySpark parity tests ensuring exact compatibility with PySpark behavior
 - Tests cover various aggregate functions, cast types, null values, empty groups, and chained operations
 - All tests work in both normal and PySpark modes via `MOCK_SPARK_TEST_BACKEND` environment variable
 
 ### Technical Details
+
 - Updated `AggregateFunction.cast()` to return a `ColumnOperation` wrapping the aggregate and target type
 - Enhanced `GroupedData.agg()` evaluation logic to detect and handle cast-wrapped aggregates
 - Improved type narrowing in `GroupedData.agg()` for better mypy compliance
@@ -1124,6 +1180,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.25.0 — 2025-01-20
 
 ### Fixed
+
 - **Issue #270** - Fixed `createDataFrame` with tuple-based data parameter to convert tuples to dictionaries
   - Fixed `AttributeError: 'tuple' object has no attribute 'keys'` when calling `.show()` with tuple-based data
   - Fixed `AttributeError: 'tuple' object has no attribute 'get'` in operations that use `.get()` on rows
@@ -1175,6 +1232,7 @@ All changes since 3.27.1 are included in this release.
   - Allows running `MOCK_SPARK_TEST_BACKEND=pyspark` tests for `eqNullSafe` without Python version mismatch errors
 
 ### Added
+
 - **Case-Insensitive Column Names Refactor** - Complete refactoring of column name resolution to use centralized `ColumnResolver` system
   - Added `spark.sql.caseSensitive` configuration (default: `false`, case-insensitive, matching PySpark)
   - Added `Configuration.is_case_sensitive()` method for checking case sensitivity setting
@@ -1209,6 +1267,7 @@ All changes since 3.27.1 are included in this release.
   - Implementation matches PySpark's behavior: `between` is inclusive on both ends (`lower <= value <= upper`)
 
 ### Changed
+
 - **Code Quality** - All CI checks now passing (ruff format, ruff check, mypy)
   - Improved type annotations for better mypy compliance
   - Cleaned up unused imports and type ignore comments
@@ -1216,6 +1275,7 @@ All changes since 3.27.1 are included in this release.
   - Applied `ruff format`/`ruff check` and mypy cleanups for new `eqNullSafe` tests and supporting code
 
 ### Testing
+
 - Added 34 unit tests for case-insensitive column resolution covering all DataFrame operations
 - Added 17 integration tests for case sensitivity configuration (case-insensitive and case-sensitive modes)
 - Added 32 new tests for ArrayType elementType support
@@ -1228,6 +1288,7 @@ All changes since 3.27.1 are included in this release.
 - All 1309 tests passing (up from 1105), 12 skipped, 0 xfailed (down from 1)
 
 ### Technical Details
+
 - Updated `ArrayType.__init__()` to accept both `elementType` (camelCase, PySpark) and `element_type` (snake_case, backward compat) keyword arguments, and to detect and handle bool values incorrectly matched to `elementType` parameter
 - Enhanced `fillna()` in `MiscService` to materialize lazy DataFrames before processing rows
 - Updated `PolarsExpressionTranslator._translate_operation()` to handle `between` operation with tuple bounds `(lower, upper)`
@@ -1240,6 +1301,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.23.0 — 2025-01-14
 
 ### Fixed
+
 - **Issue #225** - Fixed string-to-numeric type coercion for comparison operations (==, !=, <, <=, >, >=), matching PySpark behavior
 - **Issue #226** - Fixed `isin()` method to support `*values` arguments for backward compatibility, with improved type coercion for mixed types
 - **Issue #227** - Fixed `getItem()` method to properly handle out-of-bounds array and map access, returning `None` instead of raising errors (PySpark compatibility)
@@ -1251,16 +1313,19 @@ All changes since 3.27.1 are included in this release.
 - **select() Validation** - Fixed `select()` validation to skip ColumnOperation expressions (like `F.size(col)`, `F.abs(col)`), preventing false column not found errors
 
 ### Changed
+
 - **Code Quality** - Applied ruff formatting and fixed all linting issues
 - **Type Safety** - Fixed mypy type errors in transformation_service, join_service, and executor
 - **Test Coverage** - All 50 tests in `test_issues_225_231.py` now passing, including 4 pandas DataFrame support tests
 
 ### Testing
+
 - All 572 tests passing, 4 skipped
 - Comprehensive test coverage for all fixed issues
 - All CI checks passing (ruff format, ruff lint, mypy type checking)
 
 ### Technical Details
+
 - Updated `PolarsExpressionTranslator` to handle `isin` type coercion and `getItem` out-of-bounds access
 - Enhanced `dataframe_factory.py` to recognize real pandas DataFrames using duck typing
 - Improved `TransformationService.select()` to validate ColumnOperation expressions correctly
@@ -1270,6 +1335,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.21.0 — 2025-01-10
 
 ### Fixed
+
 - **Issue #212** - Fixed `DataFrame.select()` to properly handle lists of `psf.col()` statements, matching PySpark's behavior
 - **Issue #213** - Fixed `createDataFrame()` to support single `DataType` schemas with `toDF()` syntax (e.g., `createDataFrame([date1, date2], DateType()).toDF("dates")`)
 - **Issue #214** - Fixed `df.sort()` and `df.orderBy()` to properly handle list parameters (e.g., `df.sort(["col1", "col2"])`)
@@ -1283,18 +1349,21 @@ All changes since 3.27.1 are included in this release.
 - **LongType.typeName()** - Fixed `LongType.typeName()` to return `"long"` instead of `"bigint"` for PySpark compatibility
 
 ### Changed
+
 - **Code Formatting** - Applied ruff code formatting across all files, ensuring consistent code style
 - **Type Annotations** - Improved type annotations for better Python 3.8 compatibility and mypy validation
 - **Row Object Handling** - Enhanced `createDataFrame()` to properly handle Row objects initialized with kwargs
 - **DataFrame Factory** - Improved data validation to accept Row objects, lists, tuples, and dictionaries as positional rows
 
 ### Testing
+
 - Added comprehensive test coverage for issues #212, #213, #214, #215
 - Added test coverage for `groupBy()`, `rollup()`, and `cube()` with list parameters
 - All tests passing with full test suite execution
 - All CI checks passing (ruff format, ruff lint, mypy type checking)
 
 ### Technical Details
+
 - Updated `select()`, `sort()`, `orderBy()` methods in both `transformation_service.py` and `transformations/operations.py` to unpack list arguments
 - Enhanced `dataframe_factory.py` to handle single `DataType` schemas and Row object conversion
 - Modified `schema_inference.py` to correctly infer `DateType` for `datetime.date` objects
@@ -1303,12 +1372,14 @@ All changes since 3.27.1 are included in this release.
 - Enhanced expression translator to cast `size()`, `length()`, `bit_length()`, and `octet_length()` results to `Int64`
 
 ### Release
+
 - Released version 3.21.0 to PyPI: https://pypi.org/project/sparkless/3.21.0/
 - Package available for installation: `pip install sparkless==3.21.0`
 
 ## 3.14.0 — 2025-01-XX
 
 ### Fixed
+
 - **Drop Operation Improvements** - Enhanced drop operation to match PySpark behavior
   - Fixed handling of non-existent columns: drop operation now silently ignores non-existent columns (matching PySpark behavior)
   - Fixed dropping all columns: row count is now preserved when all columns are dropped, matching PySpark's behavior
@@ -1328,6 +1399,7 @@ All changes since 3.27.1 are included in this release.
   - All 173 source files now pass mypy type checking with Python 3.11
 
 ### Changed
+
 - **Code Quality** - Comprehensive code quality improvements
   - Removed all debug logging from materializer and lazy evaluation engine
   - Improved code formatting and linting (all files pass ruff format and check)
@@ -1335,6 +1407,7 @@ All changes since 3.27.1 are included in this release.
   - Improved error handling for edge cases in drop and union operations
 
 ### Testing
+
 - Fixed `test_drop_all_columns` and `test_drop_nonexistent_column` tests
 - Fixed `test_union_with_compatible_numeric_types_succeeds` and `test_union_with_float_and_double_types_succeeds` tests
 - Skipped `test_withcolumn_drop_withcolumn_chain` test due to known Polars schema dtype mismatch limitation
@@ -1344,6 +1417,7 @@ All changes since 3.27.1 are included in this release.
 - Code coverage: 51% overall
 
 ### Technical Details
+
 - Updated `PolarsMaterializer` to handle tuple/list data formats with proper schema field mapping
 - Enhanced `apply_union` in `PolarsOperationExecutor` to use correct dtypes when adding missing columns
 - Improved drop operation logic to filter out non-existent columns and preserve row count when all columns are dropped
@@ -1353,6 +1427,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.13.0 — 2025-12-XX
 
 ### Removed
+
 - **Removed PySpark Alias Import Feature** - Removed the `from pyspark.sql import ...` namespace package feature
   - Deleted `sparkless/pyspark/` namespace package directory and all related files
   - Removed pyspark namespace registration from `sparkless/__init__.py`
@@ -1363,6 +1438,7 @@ All changes since 3.27.1 are included in this release.
   - Note: `getActiveSession()` and `createDatabase()` improvements remain, just without pyspark namespace support
 
 ### Testing
+
 - All 1330+ tests passing (40 skipped)
 - All files pass mypy type checking with Python 3.11
 - All files pass ruff format and lint checks
@@ -1371,6 +1447,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.12.0 — 2025-12-XX
 
 ### Added
+
 - **PySpark Drop-in Replacement Improvements** - Comprehensive compatibility enhancements to ensure sparkless behaves exactly like PySpark in testing scenarios
   - String concatenation with `+` operator now returns `None` when DataFrame is cached, matching PySpark behavior
   - Empty DataFrame validation now requires explicit schema (raises `ValueError` if schema not provided)
@@ -1389,6 +1466,7 @@ All changes since 3.27.1 are included in this release.
   - Tests for performance mode, catalog API, and error handling compatibility
 
 ### Changed
+
 - **Caching Behavior**: DataFrame caching now properly tracks cached state and applies post-processing for string concatenation
 - **Type System**: All data types (StringType, IntegerType, etc.) now inherit from PySpark DataType when available
 - **SQL Expression Parsing**: `F.expr()` now parses SQL expressions instead of storing raw strings, with fallback for backward compatibility
@@ -1399,6 +1477,7 @@ All changes since 3.27.1 are included in this release.
 - Fixed `IntegerType.typeName()` to return `"int"` instead of `"integer"` for PySpark compatibility
 
 ### Fixed
+
 - Fixed string concatenation with `+` operator to return `None` when DataFrame is cached (PySpark compatibility)
 - Fixed empty DataFrame creation to require explicit schema when data is empty
 - Fixed union operations to properly validate schema compatibility
@@ -1408,11 +1487,13 @@ All changes since 3.27.1 are included in this release.
 - Fixed `IntegerType.typeName()` return value for PySpark compatibility
 
 ### Removed
+
 - Removed `array_distinct` function feature due to complex materialization issues with chained operations
   - Function implementation remains in codebase but is not exported
   - All `array_distinct` tests are now skipped
 
 ### Testing
+
 - All 1330+ tests passing (40 skipped)
 - All files pass mypy type checking with Python 3.11
 - All files pass ruff format and lint checks
@@ -1422,6 +1503,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.11.0 — 2025-12-10
 
 ### Added
+
 - Lazy evaluation for session-aware functions (`current_database()`, `current_schema()`, `current_user()`, `current_catalog()`)
   - Literals now resolve session state at evaluation time, not creation time, matching PySpark behavior
   - Session-aware functions properly reflect the active session's catalog state during DataFrame operations
@@ -1436,12 +1518,14 @@ All changes since 3.27.1 are included in this release.
   - `test_type_strictness.py` - tests strict type checking for datetime functions
 
 ### Changed
+
 - Session-aware functions now use lazy literal resolution via resolver functions
 - Expression evaluator and Polars translator updated to resolve lazy literals during evaluation
 - Improved type annotations: replaced `callable` with `Callable[[], Any]` for better mypy compatibility
 - Enhanced `SparkColumnNotFoundError` with optional custom message support
 
 ### Fixed
+
 - Fixed `test_current_helpers_are_session_isolated` to properly capture original session before `newSession()`
 - Fixed type checking issues in `TransformationOperations` mixin for `_validate_operation_types` method
 - Fixed strict type validation for `to_timestamp()` and `to_date()` to accept both StringType and native types (TimestampType/DateType)
@@ -1449,6 +1533,7 @@ All changes since 3.27.1 are included in this release.
 - Fixed lazy literal evaluation to resolve session state dynamically at evaluation time
 
 ### Testing
+
 - All 1209 tests passing (46 skipped)
 - All files pass mypy type checking with Python 3.11
 - All files pass ruff format and lint checks
@@ -1457,11 +1542,13 @@ All changes since 3.27.1 are included in this release.
 ## 3.10.0 — 2025-01-XX
 
 ### Added
+
 - Comprehensive type safety improvements across the codebase
 - Improved protocol type definitions with Union types instead of Any
 - Enhanced type annotations for better IDE support and static analysis
 
 ### Changed
+
 - Aligned mypy.ini configuration with pyproject.toml settings
 - Replaced `Any` type aliases with proper Union types for `ColumnExpression`, `AggregateExpression`
 - Improved protocol method signatures to use `ColumnExpression` instead of `Any`
@@ -1469,6 +1556,7 @@ All changes since 3.27.1 are included in this release.
 - Removed module-level error ignoring for `display.operations`, `joins.operations`, and `operations.misc`
 
 ### Fixed
+
 - Fixed type ignore comments with proper type narrowing in datetime functions
 - Fixed SQLAlchemy helper function return types
 - Fixed PySpark compatibility layer typing issues
@@ -1476,6 +1564,7 @@ All changes since 3.27.1 are included in this release.
 - Improved type safety in display, join, and misc operations modules
 
 ### Testing
+
 - All tests passing (1095 passed, 47 skipped)
 - All modified files pass mypy type checking
 - Code formatted and linted with ruff
@@ -1483,20 +1572,24 @@ All changes since 3.27.1 are included in this release.
 ## 3.9.1 — 2025-01-XX
 
 ### Fixed
+
 - Fixed timezone handling in `from_unixtime()` and `timestamp_seconds()` functions to interpret Unix timestamps as UTC and convert to local timezone, matching PySpark behavior.
 - Fixed CI performance test job to handle cases where no performance tests are found (exit code 5).
 
 ### Changed
+
 - Improved CI test execution with parallel test runs using pytest-xdist, significantly reducing CI execution time.
 - Added `pytest-xdist>=3.0.0` to dev dependencies for parallel test execution.
 
 ### Testing
+
 - All compatibility tests now passing with proper timezone handling.
 - CI tests now run in parallel across 4 test groups (unit, compatibility, performance, documentation).
 
 ## 3.9.0 — 2025-12-02
 
 ### Added
+
 - Complete implementation of all 11 window functions with proper partitioning and ordering support:
   - `row_number()`, `rank()`, `dense_rank()` - ranking functions
   - `cume_dist()`, `percent_rank()` - distribution functions
@@ -1507,6 +1600,7 @@ All changes since 3.27.1 are included in this release.
 - Enhanced window function evaluation with proper tie handling for rank-based calculations.
 
 ### Fixed
+
 - Fixed `nth_value()` to return NULL for rows before the nth position, matching PySpark behavior.
 - Fixed `cume_dist()` and `percent_rank()` calculations to correctly handle ties using rank-based calculations.
 - Fixed window function results alignment when DataFrame is sorted after evaluation.
@@ -1514,16 +1608,19 @@ All changes since 3.27.1 are included in this release.
 - Fixed syntax errors in `window_execution.py` that prevented proper module import.
 
 ### Changed
+
 - Window functions now use Python evaluation fallback when Polars backend doesn't support them, ensuring correct PySpark-compatible behavior.
 - Improved window function partitioning and ordering logic to handle edge cases (single-row partitions, ties, etc.).
 
 ### Testing
+
 - All 11 window function compatibility tests now passing (previously 7 passing, 4 skipped).
 - Full test suite: 1088 tests passing with 47 expected skips.
 
 ## 3.7.0 — 2025-01-XX
 
 ### Added
+
 - Full SQL DDL/DML support: `CREATE TABLE`, `DROP TABLE`, `INSERT INTO`, `UPDATE`, and `DELETE FROM` statements are now fully implemented in the SQL executor.
 - Enhanced SQL parser with comprehensive support for DDL statements including column definitions, `IF NOT EXISTS`, and `IF EXISTS` clauses.
 - Support for `INSERT INTO ... VALUES (...)` with multiple rows and `INSERT INTO ... SELECT ...` sub-queries.
@@ -1531,31 +1628,37 @@ All changes since 3.27.1 are included in this release.
 - `DELETE FROM ... WHERE ...` statements with Python-based condition evaluation.
 
 ### Changed
+
 - SQL executor now handles DDL/DML operations by directly interacting with the storage backend, bypassing DataFrame expression translation for complex SQL operations.
 - Improved error handling in SQL operations with proper exception types and messages.
 
 ### Fixed
+
 - Fixed recursion error in `DataFrame._project_schema_with_operations` by using `_schema` directly instead of the `schema` property.
 - Fixed `UnboundLocalError` in SQL executor by removing shadowing local imports of `StructType`.
 - Removed unused imports and improved code quality with ruff linting fixes.
 
 ### Documentation
+
 - Updated SQL executor docstrings to reflect full DDL/DML implementation status.
 - README "Recent Updates" highlights the new SQL DDL/DML capabilities.
 
 ## 3.6.0 — 2025-11-13
 
 ### Added
+
 - Feature-flagged profiling utilities in `sparkless.utils.profiling`, with Polars execution and
   expression hot paths instrumented via lightweight decorators.
 - Optional native pandas backend selection through `MOCK_SPARK_PANDAS_MODE`, including a benchmarking
   harness at `scripts/benchmark_pandas_fallback.py`.
 
 ### Changed
+
 - The query optimizer now supports adaptive execution simulation, inserting configurable
   `REPARTITION` operations when skew metrics indicate imbalanced workloads.
 
 ### Documentation
+
 - Published performance guides covering hot-path profiling (`docs/performance/profiling.md`) and
   pandas fallback benchmarking (`docs/performance/pandas_fallback.md`).
 - README “Recent Updates” highlights the profiling, adaptive execution, and pandas backend features.
@@ -1563,6 +1666,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.5.0 — 2025-11-13
 
 ### Added
+
 - Session-aware helper functions in `sparkless.functions`: `current_catalog`, `current_database`,
   `current_schema`, and `current_user`, plus a dynamic `call_function` dispatcher.
 - Regression tests covering the new helpers and dynamic dispatch, ensuring PySpark-compatible error
@@ -1571,36 +1675,43 @@ All changes since 3.27.1 are included in this release.
   wheels when running documentation and compatibility suites.
 
 ### Changed
+
 - The Polars storage backend and `UnifiedStorageManager` now track the active schema so
   `setCurrentDatabase` updates propagate end-to-end.
 - `SparkContext.sparkUser()` mirrors PySpark’s context helper, allowing the new literal functions to
   surface the current user.
 
 ### Documentation
+
 - README and quick-start docs updated for version 3.5.0 and the session-aware catalogue features.
 - Internal upgrade summary documents the stability improvements and successful full-suite run.
 
 ## 3.4.0 — 2025-11-12
 
 ### Changed
+
 - Standardised local workflows around `bash tests/run_all_tests.sh`, Ruff, and MyPy via updated Makefile targets and `install.sh`.
 - Introduced GitHub Actions CI that enforces linting, type-checking, and full-suite coverage on every push and pull request.
 - Refreshed development docs to reflect the consolidated tooling commands.
 
 ### Added
+
 - Published `plans/typing_delta_roadmap.md`, outlining phased mypy cleanup and Delta feature milestones for the next release cycle.
 
 ### Documentation
+
 - README “Recent Updates” highlights the 3.4.0 workflow improvements and roadmap visibility.
 
 ## 3.3.0 — 2025-11-12
 
 ### Added
+
 - Consolidated release metadata so `pyproject.toml`, `sparkless/__init__.py`, and published wheels all advertise version `3.3.0`.
 - Documented the renumbering from the legacy 3.x preview series to the semantic 0.x roadmap, keeping downstream consumers aligned with public messaging.
 - Updated README badges and compatibility tables to reflect the curated 396-test suite and PySpark 3.2–3.5 coverage.
 
 ### Changed
+
 - Finalised the migration to Python 3.8-compatible typing throughout the Polars executor,
   DataFrame reader/writer, schema manager, and Delta helpers so that `mypy sparkless`
   now completes without suppressions.
@@ -1608,18 +1719,21 @@ All changes since 3.27.1 are included in this release.
   overhead while keeping tooling visibility intact.
 
 ### Fixed
+
 - Ensured Python-evaluated projection columns always materialise with string aliases,
   preventing accidental `None` column names when fallback expressions run outside Polars.
 - Normalised optional alias handling inside the Delta merge builder, avoiding runtime
   `None` lookups when accessing assignment metadata.
 
 ### Documentation
+
 - README “Recent Updates” highlights the metadata realignment for 3.3.0 and the clean `mypy` status.
 - Refreshed version references to 3.3.0 across project metadata.
 
 ## 3.2.0 — 2025-11-12
 
 ### Changed
+
 - Lowered the minimum supported Python version to 3.8 and aligned Black, Ruff, and mypy
   targets so local tooling matches the published wheel.
 - Added `typing_extensions` dependency for Python 3.8 compatibility and used `from __future__ import annotations`
@@ -1630,12 +1744,14 @@ All changes since 3.27.1 are included in this release.
   the Ruff style guide.
 
 ### Documentation
+
 - Updated the README to call out the Python 3.8 baseline and refreshed the "Recent Updates"
   section with the typing/tooling improvements delivered in 3.2.0.
 
 ## 3.1.0 — 2025-11-07
 
 ### Added
+
 - Schema reconciliation for Delta `mergeSchema=true` appends on the Polars backend,
   preventing null-type collisions while preserving legacy data.
 - Datetime compatibility helpers in `sparkless.compat.datetime` for producing
@@ -1651,6 +1767,7 @@ All changes since 3.27.1 are included in this release.
 ## 3.0.0 — 2025-09-12
 
 ### Added
+
 - Polars backend as the new default execution engine, delivering thread-safe, high-performance
   DataFrame operations without JVM dependencies.
 - Parquet-based table persistence with `saveAsTable`, including catalog synchronisation and
@@ -1659,22 +1776,26 @@ All changes since 3.27.1 are included in this release.
 - New documentation covering backend architecture, migration guidance from v2.x, and configuration options.
 
 ### Changed
+
 - Migrated window functions, joins, aggregations, and lazy evaluation to Polars-powered implementations
   while maintaining PySpark-compatible APIs.
 - Updated test harness and CI scripts to exercise the Polars backend, increasing the regression suite to
   600+ passing tests.
 
 ### Removed
-- Legacy DuckDB-backed SQL translation layer (`sqlglot` dependency, Mock* prefixed classes) in favour of
+
+- Legacy DuckDB-backed SQL translation layer (`sqlglot` dependency, Mock\* prefixed classes) in favour of
   the unified protocol-based backend architecture.
 
 ### Documentation
+
 - Introduced `docs/backend_selection.md` describing backend options, environment
   overrides, and troubleshooting tips.
 - Documented merge-schema limitations and datetime helper usage in
   `docs/known_issues.md`.
 
 ### Known Issues
+
 - Documentation example tests invoke the globally installed `sparkless`
   distribution. When a different version is installed in `site-packages`, the
   example scripts exit early with `ImportError`. Align the executable path or
