@@ -19,7 +19,7 @@
 [![Type Checked](https://img.shields.io/badge/mypy-501%20files%20clean-blue.svg)](https://github.com/python/mypy)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-**Current release:** 4.0.0
+**Current release:** see [CHANGELOG.md](CHANGELOG.md)
 
 *⚡ 10x faster tests • 🎯 Drop-in PySpark replacement • 📦 Zero JVM overhead • 🦀 Robin (Rust) engine*
 
@@ -570,6 +570,20 @@ ruff check .
 ---
 
 ## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the pre-push checklist.
+
+**Every PR that changes runtime behaviour needs a changeset** — that is what
+decides the next version and writes the changelog:
+
+```bash
+pnpm install        # once
+pnpm changeset      # pick patch/minor/major, write a one-line summary
+```
+
+Merging to `main` opens a "Version Packages" PR; merging *that* PR publishes to
+the Azure Artifacts feed. Full flow in
+[docs/release-process.md](docs/release-process.md).
 
 We welcome contributions! Areas of interest:
 

@@ -1,3 +1,5 @@
+# sparkless
+
 ## [4.2.1](https://github.com/Solya-app/sparkless/compare/v4.2.0...v4.2.1) (2026-04-13)
 
 

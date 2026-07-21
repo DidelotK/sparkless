@@ -38,12 +38,18 @@ jobs:
         env:
           AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
-          for f in dist/*.whl dist/*.tar.gz; do
-            echo "Uploading $f..."
-            twine upload \
-              --non-interactive \
-              --repository-url "https://pkgs.dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_packaging/${AZURE_DEVOPS_FEED}/pypi/upload/" \
-              --username _ \
-              --password "${AZURE_DEVOPS_PAT}" \
-              "$f" || echo "Warning: upload of $f failed (may already exist)"
-          done
+          set -euo pipefail
+          if [ -z "${AZURE_DEVOPS_PAT}" ]; then
+            echo "::error::AZURE_DEVOPS_PAT is unset; refusing an unauthenticated publish." >&2
+            exit 1
+          fi
+          # --skip-existing tolerates ONLY "already on the feed"; every other
+          # failure is fatal. The previous `|| echo "Warning: ..."` swallowed
+          # auth and network errors and reported success.
+          twine upload \
+            --non-interactive \
+            --skip-existing \
+            --repository-url "https://pkgs.dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_packaging/${AZURE_DEVOPS_FEED}/pypi/upload/" \
+            --username _ \
+            --password "${AZURE_DEVOPS_PAT}" \
+            dist/*

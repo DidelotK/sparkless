@@ -277,3 +277,6 @@ tramp
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Node (Changesets release tooling)
+node_modules/

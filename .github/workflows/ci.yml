@@ -23,6 +23,11 @@ jobs:
         run: python -m ruff check .
       - name: Type check
         run: python -m mypy sparkless tests
+      # package.json (what Changesets bumps), pyproject.toml (what the wheel is
+      # built from) and sparkless/_version.py must never drift apart. Catching it
+      # here means it can't be discovered from a mislabelled published artifact.
+      - name: Version files agree
+        run: python3 scripts/release/check_version_consistency.py
 
   test-unit:
     runs-on: ubuntu-latest
