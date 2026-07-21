@@ -370,6 +370,8 @@ class ConditionEvaluator:
             "array_join",
             "array_remove",
             "array_union",
+            "array_except",
+            "array_intersect",
         ]:
             return ConditionEvaluator._evaluate_function_operation_value(row, operation)
 
@@ -910,10 +912,7 @@ class ConditionEvaluator:
         elif operation_type == "array_contains":
             if col_value is None:
                 return None
-            search_value = operation.value
-            # If search_value is a Column reference, resolve it from the row
-            if hasattr(search_value, "name"):
-                search_value = ConditionEvaluator._get_column_value(row, search_value)
+            search_value = ConditionEvaluator._resolve_operand(row, operation.value)
             if isinstance(col_value, (list, tuple)):
                 return search_value in col_value
             return False
@@ -921,12 +920,15 @@ class ConditionEvaluator:
         elif operation_type == "array_position":
             if col_value is None:
                 return None
-            search_value = operation.value
+            search_value = ConditionEvaluator._resolve_operand(row, operation.value)
+            # PySpark: a NULL search value yields NULL, not 0.
+            if search_value is None:
+                return None
             if isinstance(col_value, (list, tuple)):
-                try:
-                    return col_value.index(search_value) + 1  # 1-based
-                except ValueError:
-                    return 0
+                for idx, item in enumerate(col_value):
+                    if item == search_value:
+                        return idx + 1  # 1-based
+                return 0
             return 0
 
         elif operation_type == "element_at":
@@ -985,8 +987,38 @@ class ConditionEvaluator:
                 return None
             if not isinstance(col_value, (list, tuple)):
                 return None
-            remove_value = operation.value
+            remove_value = ConditionEvaluator._resolve_operand(row, operation.value)
+            # PySpark: removing a NULL value yields NULL for the whole array.
+            if remove_value is None:
+                return None
             return [x for x in col_value if x != remove_value]
+
+        elif operation_type in ("array_except", "array_intersect"):
+            if col_value is None:
+                return None
+            arr2 = ConditionEvaluator._get_column_value(row, operation.value)
+            if arr2 is None:
+                return None
+            if not isinstance(col_value, (list, tuple)) or not isinstance(
+                arr2, (list, tuple)
+            ):
+                return None
+            # PySpark set semantics: the result is deduplicated and keeps the
+            # first-occurrence order of the left array. NULL participates as a
+            # value (``array_except([a, NULL], [NULL])`` -> ``[a]``).
+            other = {ConditionEvaluator._element_key(item) for item in arr2}
+            want_present = operation_type == "array_intersect"
+            seen_keys: set = set()  # type: ignore[no-redef]
+            result: list = []  # type: ignore[no-redef]
+            for item in col_value:
+                key = ConditionEvaluator._element_key(item)
+                if (key in other) is not want_present:
+                    continue
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                result.append(item)
+            return result
 
         elif operation_type == "array_union":
             if col_value is None:
@@ -1769,10 +1801,7 @@ class ConditionEvaluator:
             # array_contains needs special handling - check if value is in array
             if col_value is None:
                 return None
-            search_value = operation.value
-            # If search_value is a Column reference, resolve it from the row
-            if hasattr(search_value, "name"):
-                search_value = ConditionEvaluator._get_column_value(row, search_value)
+            search_value = ConditionEvaluator._resolve_operand(row, operation.value)
             if isinstance(col_value, (list, tuple)):
                 return search_value in col_value
             return False
@@ -2358,6 +2387,49 @@ class ConditionEvaluator:
             return column.value
         else:
             return column
+
+    @staticmethod
+    def _resolve_operand(row: Dict[str, Any], value: Any) -> Any:
+        """Resolve a scalar operand that may be a column reference.
+
+        Functions such as ``array_remove(col, x)`` accept either a plain Python
+        literal or a ``Column``/``ColumnOperation``/``Literal``. A column-shaped
+        operand must be resolved against the row before it is compared with
+        array elements: comparing an element against an unresolved ``Column``
+        invokes ``Column.__eq__``/``__ne__``, which returns a *truthy
+        ColumnOperation* rather than a bool, so every comparison silently
+        succeeds.
+
+        A bare ``str`` is deliberately treated as a literal, not as a column
+        name -- that is the PySpark signature for these functions.
+
+        Args:
+            row: Data row.
+            value: The operand, either a literal or a column reference.
+
+        Returns:
+            The resolved value.
+        """
+        if isinstance(value, (Column, ColumnOperation)) or (
+            not isinstance(value, (str, bytes)) and hasattr(value, "name")
+        ):
+            return ConditionEvaluator._get_column_value(row, value)
+        return value
+
+    @staticmethod
+    def _element_key(item: Any) -> Any:
+        """Build a hashable identity key for an array element.
+
+        Mirrors the fallback used by ``array_union`` so that unhashable
+        elements (lists, dicts) still participate in set operations.
+        """
+        if isinstance(item, (int, float, str, bool, type(None))):
+            return item
+        try:
+            hash(item)
+        except TypeError:
+            return repr(item)
+        return item
 
     @staticmethod
     def _coerce_for_comparison(left_val: Any, right_val: Any) -> Tuple[Any, Any]:
