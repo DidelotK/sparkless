@@ -25,8 +25,6 @@ derived from the API docs. These tests are backend-agnostic and also pass
 under ``MOCK_SPARK_TEST_BACKEND=pyspark``.
 """
 
-import pytest
-
 from tests.fixtures.spark_imports import get_spark_imports
 
 
@@ -256,13 +254,12 @@ class TestArrayContainsUnaffected:
     It was refactored onto the shared helper, so it is pinned here.
     """
 
-    @pytest.mark.parametrize(
-        "row_id,expected", [("r1", True), ("r3", False), ("r5", False)]
-    )
-    def test_contains_column_argument(self, spark, row_id, expected) -> None:
+    def test_contains_column_argument(self, spark) -> None:
         F = get_spark_imports().F
         got = _by_id(spark, F.array_contains(F.col("doms"), F.col("domain")))
-        assert got[row_id] is expected
+        assert got["r1"] is True
+        assert got["r3"] is False  # "zz" absent
+        assert got["r5"] is False  # empty array
 
     def test_contains_literal_argument(self, spark) -> None:
         F = get_spark_imports().F
