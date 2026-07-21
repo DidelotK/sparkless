@@ -7,6 +7,7 @@ This file tracks bugs and issues discovered during test refactoring and developm
 **Total Bugs Logged**: 26
 **Total Bugs Logged**: 25
 **Total Bugs Logged**: 29
+**Total Bugs Logged**: 42
 
 ---
 
@@ -1579,3 +1580,220 @@ three sites were wrongly using -- is precisely the correct semantics for
 
 **Regression tests**: `tests/unit/functions/test_round_scale_argument.py`
 (17 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
+---
+
+### BUG-035: Most aggregate functions over a window return NULL
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**File**: `sparkless/functions/window_execution.py`
+
+**Description**:
+`WindowFunction.evaluate()` dispatched aggregates through an `elif` chain naming
+`sum`, `avg`, `count` and `approx_count_distinct`. Everything else fell into
+`else: return [None] * len(data)`. So `max`, `min`, `mean`, `collect_list`,
+`collect_set`, `stddev`/`stddev_samp`/`stddev_pop`, `variance`/`var_samp`/
+`var_pop`, `skewness`, `kurtosis`, `product`, `median`, `mode`, `any_value` and
+`bit_and`/`bit_or`/`bit_xor` over **any** window returned NULL -- for a plain
+column, with no expression involved.
+
+**Reproduction**:
+```python
+df.withColumn("m", F.max("x").over(Window.partitionBy("grp")))  # -> None
+```
+
+**Impact**:
+An unimplemented function was indistinguishable from a genuine SQL NULL, so the
+library reported a plausible wrong answer rather than "not supported".
+`max`/`min` are the dangerous cases: NULL reads as "no data".
+
+**Fix**:
+New `sparkless/functions/window_frames.py` holds a `{name: reducer}` table
+(`REDUCERS`) plus `resolve_frame()`. `WindowFunction._evaluate_frame_aggregate()`
+is now the single implementation for every frame-shaped aggregate. Adding an
+aggregate is a table entry, not a new branch.
+
+A genuine dispatch miss now emits a `UserWarning` naming the function instead of
+returning a silent NULL.
+
+---
+
+### BUG-036: Window frames ignored -- ordered aggregates return the partition total
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**File**: `sparkless/functions/window_execution.py`
+
+**Description**:
+The three aggregates that *were* implemented each approximated the window frame
+differently, and none of them correctly. Spark's default frame for an ORDER BY
+window is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` -- a running
+aggregate, with tied rows sharing one frame as peers.
+
+* `sum` applied the running frame only when an explicit
+  `rowsBetween(unboundedPreceding, currentRow)` was supplied; otherwise it
+  returned the whole-partition total.
+* `avg` on the ordered path ignored `partitionBy` **entirely**, accumulating a
+  running average over the whole DataFrame in physical row order.
+* `count` ignored the ordering and returned the partition count.
+
+**Reproduction** (values 10, 20, 30 in one partition, ordered by a distinct key):
+```python
+df.withColumn("r", F.sum("x").over(Window.partitionBy("grp").orderBy("k")))
+# Sparkless: 60, 60, 60      PySpark 4.0.0: 10, 30, 60
+```
+For `avg`, a two-row partition holding only NULL and 7.0 received 16.0 and 16.25
+-- numbers computed from a *different* partition's rows.
+
+**Impact**:
+More dangerous than BUG-035, because a wrong *number* survives any assertion
+that checks shape or non-nullness. Running totals over an ordered window are
+how stock ledgers and trend tables are computed downstream.
+
+Note this is why BUG-035 and BUG-036 are one defect and not two: there was no
+shared notion of "the frame", so each function invented its own.
+
+**Fix**:
+`resolve_frame()` implements Spark's frame rules once -- default ROWS-whole-
+partition without ORDER BY, default RANGE prefix with it, explicit
+`rowsBetween` (physical) and `rangeBetween` (value-based, offsets following the
+sort direction) -- and every reducer runs over the resolved frame.
+
+This also fixed 15 pre-existing failing tests in the repo, including
+`test_issue_392_window_sum_peers`, `test_issue_393_sum_string_column`,
+`test_issue_407_stddev_window` and `test_issue_414_row_number_over_descending`.
+
+**Regression tests**: `tests/unit/functions/test_window_aggregate_frames.py`
+(47 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
+---
+
+### BUG-037: A scalar function wrapping an aggregate returns NULL
+**Status**: Fixed
+**Severity**: High
+**Discovered**: 2026-07-21
+**File**: `sparkless/dataframe/grouped/base.py`
+
+**Description**:
+(Reported as BUG-026 in the open-findings sweep; renumbered on landing.)
+`_evaluate_column_expression` resolved the inner aggregate but gated every
+downstream branch on an arithmetic-only operation set (`+ - * / %`), so `sqrt`,
+`abs`, `ceil`, `floor`, `coalesce`, `upper` and every other *named* function
+matched nothing and hit the literal `return expr_name, None` at the bottom.
+
+```python
+df.groupBy("grp").agg(F.sqrt(F.sum("x")).alias("r"))  # PySpark 7.745967 -> None
+```
+
+Arithmetic on an aggregate worked, and a scalar function on a plain column
+worked; only the combination failed.
+
+**Fix**:
+`_resolve_aggregates_to_row()` walks the expression, evaluates each aggregate
+node to a scalar into a synthetic one-row dict, and substitutes a plain column
+reference for it. The outer expression is then handed to the ordinary
+`ExpressionEvaluator`, so scalar functions are supported *by construction*
+rather than enumerated -- and the grouped path inherits scalar-evaluator fixes
+automatically.
+
+**Regression tests**: `tests/unit/functions/test_grouped_scalar_over_aggregate.py`
+(14 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
+---
+
+## Open findings from the aggregate/window sweep (not fixed)
+
+Reproduced against **PySpark 4.0.0** on OpenJDK 21. Each was found while fixing
+BUG-035/036/037 and left out to keep that change to a single concern.
+
+### BUG-038: `least` and `greatest` return their first argument
+**Status**: Open
+**Severity**: High
+**File**: `sparkless/core/condition_evaluator.py`
+
+`ExpressionEvaluator` routes `least`/`greatest` to a stub branch commented
+"simplified version" that returns the first operand's value and never looks at
+the others:
+
+```python
+elif operation_type == "greatest":
+    # For greatest, we need multiple values - this is a simplified version
+    return value if value is not None else None
+```
+
+A correct implementation exists in the same file (~line 1503) and is what
+`df.select(F.least(a, b))` reaches, so the plain path is right and only some
+callers hit the stub. Verified on a one-row frame `{s0: 30.0, s1: 60.0}`:
+`greatest(s0, s1)` returns `30.0`, PySpark returns `60.0`.
+
+This is another *plausible wrong value*, not a NULL, and it is easy to miss:
+`greatest(F.sum("x"), F.max("x"))` returns the right answer whenever the sum
+happens to be the larger of the two, which is most of the time.
+
+Not fixed here because `condition_evaluator.py` is touched by several in-flight
+PRs.
+
+### BUG-039: A select-level scalar over an aggregate does not collapse the rows
+**Status**: Open
+**Severity**: Medium
+**File**: `sparkless/dataframe/lazy.py`
+
+```python
+df.select(F.sum("x").alias("r"))        # 1 row, correct
+df.select(F.sqrt(F.sum("x")).alias("r"))  # 5 rows of NULL; PySpark: 1 row, 8.944272
+```
+
+The wrapped aggregate is not recognised as an aggregate by the select planner,
+so the projection stays row-wise. BUG-037's fix covers the `groupBy(...).agg()`
+path only. Both the value *and* the row count are wrong.
+
+### BUG-040: `first`/`last` over a window ignore peers and explicit frames
+**Status**: Open
+**Severity**: Medium
+**File**: `sparkless/functions/window_execution.py`
+
+`_evaluate_last` returns the current row's value for an ordered window, which is
+correct only when the ORDER BY key is unique. With ties, Spark returns the last
+value of the *peer group*: for rows `(k=1, x=10)` and `(k=1, x=20)` under
+`orderBy("k")`, PySpark gives `20` for both; sparkless gives `10` and `20`.
+`_evaluate_first`/`_evaluate_first_value`/`_evaluate_last_value` likewise ignore
+an explicit `rowsBetween`/`rangeBetween`.
+
+These are positional rather than aggregate functions, so they were left on their
+bespoke branches; routing them through `resolve_frame()` is the natural fix, but
+it interacts with `ignoreNulls`, which was not probed.
+
+### BUG-041: ORDER BY sorts NULLs last; Spark sorts them first on ASC
+**Status**: Open
+**Severity**: Medium
+**File**: `sparkless/functions/window_execution.py` (`_sort_indices_by_columns`)
+
+Spark's default is `ASC NULLS FIRST` / `DESC NULLS LAST` -- which is why
+`asc_nulls_last()` exists as an explicit variant. `_sort_indices_by_columns`
+defaults to `nulls_last = True` for a plain ascending sort. Verified: with keys
+`[1, 2, 4, NULL]` and a running sum, PySpark places the NULL-key row *first*, so
+every subsequent row's running total includes it.
+
+Affects `row_number`, `rank`, `dense_rank`, `lag`/`lead` and the new frame
+engine alike -- one shared helper, so a one-line change, but it moves rows under
+every window function at once and needs its own verification pass.
+
+### BUG-042: DISTINCT aggregates over a window are accepted
+**Status**: Open
+**Severity**: Low
+**File**: `sparkless/functions/window_execution.py`
+
+PySpark 4.0.0 rejects `F.count_distinct(...).over(w)` and
+`F.sum_distinct(...).over(w)` with
+`[DISTINCT_WINDOW_FUNCTION_UNSUPPORTED] ... SQLSTATE: 0A000`. Sparkless computes
+a value for the first and NULL for the second. Sparkless being more permissive
+than Spark means a query that cannot run in production passes its unit tests.
+
+### Note: `F.round` still ignores its scale argument for expression operands
+
+`F.round(F.col("a") / 3, 2)` returns `7` rather than `6.67` on `main`. This is
+BUG-025, whose fix (`spark_round()` in `math_utils.py`) is in an unmerged PR.
+BUG-037's fix routes the grouped path through the same scalar evaluator, so
+`agg(F.round(F.sum("x") / 3, 2))` will start returning `6.67` as soon as that
+lands -- no further change needed here.
