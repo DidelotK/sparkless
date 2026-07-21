@@ -10,6 +10,7 @@ This file tracks bugs and issues discovered during test refactoring and developm
 **Total Bugs Logged**: 42
 **Total Bugs Logged**: 27
 **Total Bugs Logged**: 48
+**Total Bugs Logged**: 49
 
 ---
 
@@ -2003,13 +2004,15 @@ automatically.
 
 ---
 
-## Open findings from the aggregate/window sweep (not fixed)
+## Findings from the aggregate/window sweep
 
 Reproduced against **PySpark 4.0.0** on OpenJDK 21. Each was found while fixing
 BUG-035/036/037 and left out to keep that change to a single concern.
+BUG-038/039/040/042 were subsequently fixed together (they share one failure
+design -- see BUG-038); BUG-041 remains open.
 
 ### BUG-038: `least` and `greatest` return their first argument
-**Status**: Open
+**Status**: Fixed
 **Severity**: High
 **File**: `sparkless/core/condition_evaluator.py`
 
@@ -2035,8 +2038,35 @@ happens to be the larger of the two, which is most of the time.
 Not fixed here because `condition_evaluator.py` is touched by several in-flight
 PRs.
 
+
+**Root cause (shared with BUG-039/040/042 and with BUG-035)**:
+A dispatch whose unmatched case yields a *plausible value* instead of an error.
+`ExpressionEvaluator._evaluate_function_call` ends in `return value` -- the
+function's first operand -- for any name not in `_function_registry`, and
+neither `greatest`/`least` nor `bround` was registered. The same shape produced
+BUG-035's `[None] * len(data)` and BUG-039's top-level-only `_AGG_OPS` test.
+
+**Fix**:
+`sparkless/core/variadic.py` holds the NULL-skipping semantics once;
+`ConditionEvaluator` (the `select` path, already correct) and
+`ExpressionEvaluator` (the `withColumn` path, which returned operand 1) both
+call it, so they cannot drift apart again. The terminal `return value` now
+emits a `UserWarning` naming the function, mirroring what BUG-035's fix did for
+the window dispatch -- which is how BUG-046 was found.
+
+`F.greatest(x)` with a single argument now raises, as Spark's
+`[WRONG_NUM_COLUMNS]` does; accepting it made `greatest` an identity function.
+
+**Reference behaviour**: `greatest`/`least` **skip** NULL operands rather than
+propagating them -- `greatest(NULL, 2, 3)` is `3`, and only an all-NULL
+argument list yields NULL. This is the opposite of most functions and was
+verified on PySpark 4.0.0 / OpenJDK 21.
+
+**Regression tests**: `tests/unit/functions/test_least_greatest_operand_shapes.py`
+(31 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
 ### BUG-039: A select-level scalar over an aggregate does not collapse the rows
-**Status**: Open
+**Status**: Fixed
 **Severity**: Medium
 **File**: `sparkless/dataframe/lazy.py`
 
@@ -2049,8 +2079,24 @@ The wrapped aggregate is not recognised as an aggregate by the select planner,
 so the projection stays row-wise. BUG-037's fix covers the `groupBy(...).agg()`
 path only. Both the value *and* the row count are wrong.
 
+
+**Fix**:
+The select planner's `_is_agg_expr` tested the **top-level** operation name
+against a hardcoded `_AGG_OPS` set, so wrapping an aggregate in anything moved
+it out of the tested slot. It now walks the whole expression -- the same move
+BUG-037 made for `groupBy().agg()` -- so wrapping works by construction rather
+than by enumeration. A window function is deliberately not descended into:
+`F.sum(x).over(w)` contains an aggregate but is row-wise, and collapsing it
+would be worse than the bug being fixed.
+
+Still divergent (out of scope): `df.select(F.col("x"), F.sum("x"))` returns a
+row where PySpark raises `[MISSING_GROUP_BY]`.
+
+**Regression tests**: `tests/unit/functions/test_select_scalar_over_aggregate.py`
+(10 tests, passing under both engines).
+
 ### BUG-040: `first`/`last` over a window ignore peers and explicit frames
-**Status**: Open
+**Status**: Fixed
 **Severity**: Medium
 **File**: `sparkless/functions/window_execution.py`
 
@@ -2064,6 +2110,24 @@ an explicit `rowsBetween`/`rangeBetween`.
 These are positional rather than aggregate functions, so they were left on their
 bespoke branches; routing them through `resolve_frame()` is the natural fix, but
 it interacts with `ignoreNulls`, which was not probed.
+
+
+**Fix**:
+`first`/`last`/`first_value`/`last_value` are now `POSITIONAL_REDUCERS` entries
+in `window_frames.py` and run through `_evaluate_frame_aggregate`, so they
+inherit `resolve_frame()`'s peer groups and explicit `rowsBetween`/
+`rangeBetween` instead of re-deriving the frame by hand. Four bespoke methods
+and four `elif` branches were deleted.
+
+`ignoreNulls` -- which the note above flagged as unprobed -- turned out to be
+parsed onto the `AggregateFunction` and then never read on the window path, so
+`F.first(x, True)` silently behaved like `F.first(x)`. `F.last` did not accept
+the argument at all. Both now honour it, as do `first_value`/`last_value`.
+Confirmed against PySpark 4.0.0: without `ignoreNulls`, a NULL at the frame
+edge **is** the answer -- `last` does not fall back to the last non-NULL seen.
+
+**Regression tests**: `tests/unit/functions/test_window_positional_and_distinct.py`
+(14 tests, passing under both engines).
 
 ### BUG-041: ORDER BY sorts NULLs last; Spark sorts them first on ASC
 **Status**: Fixed
@@ -2136,7 +2200,7 @@ type differs, so it surfaces as `Row(rs=5.0)` vs `Row(rs=5)` in strict
 comparisons.
 
 ### BUG-042: DISTINCT aggregates over a window are accepted
-**Status**: Open
+**Status**: Fixed
 **Severity**: Low
 **File**: `sparkless/functions/window_execution.py`
 
@@ -2146,6 +2210,18 @@ PySpark 4.0.0 rejects `F.count_distinct(...).over(w)` and
 a value for the first and NULL for the second. Sparkless being more permissive
 than Spark means a query that cannot run in production passes its unit tests.
 
+
+**Fix**:
+`WindowFunction.evaluate()` raises `AnalysisException` with Spark's
+`[DISTINCT_WINDOW_FUNCTION_UNSUPPORTED] ... SQLSTATE: 0A000` for the names in
+`DISTINCT_WINDOW_FUNCTIONS`. The check is on the evaluation path, not in
+`.over()`, because `F.count_distinct(x).over(w)` on its own is a legal Column
+in PySpark too -- only *using* it raises. `approx_count_distinct` is not a
+DISTINCT aggregate and Spark does permit it over a window, so it is explicitly
+excluded; a test pins that the guard does not over-reject.
+
+**Regression tests**: `tests/unit/functions/test_window_positional_and_distinct.py`.
+
 ### Note: `F.round` still ignores its scale argument for expression operands
 
 `F.round(F.col("a") / 3, 2)` returns `7` rather than `6.67` on `main`. This is
@@ -2153,3 +2229,100 @@ BUG-025, whose fix (`spark_round()` in `math_utils.py`) is in an unmerged PR.
 BUG-037's fix routes the grouped path through the same scalar evaluator, so
 `agg(F.round(F.sum("x") / 3, 2))` will start returning `6.67` as soon as that
 lands -- no further change needed here.
+
+---
+
+## Findings from the least/greatest sweep
+
+Reproduced against **PySpark 4.0.0** on OpenJDK 21 while fixing
+BUG-038/039/040/042.
+
+> Numbering note: the concurrent ordering / NULL-comparison sweep landed on
+> `main` as BUG-046/047 while this branch was in flight, so these findings took
+> 048/049 on rebase. 044 ended up unused.
+
+### BUG-045: `F.bround` is not implemented
+**Status**: Fixed
+**Severity**: Medium
+**File**: `sparkless/core/math_utils.py`
+
+Flagged as a "known related gap" under BUG-025 and never given its own number.
+`bround` was registered in neither evaluator, so it took the same silent
+fallthrough as BUG-038: `df.select(F.bround(v, 2))` returned NULL and
+`df.withColumn("b", F.bround(v, 2))` returned the **unrounded** value. The
+latter is the dangerous one -- a money figure that was never rounded still
+passes "is not null" and "> 0".
+
+**Reference behaviour**:
+`bround` is HALF_EVEN, but it is **not** Python's built-in `round`, contrary to
+the note under BUG-025. Python rounds the exact binary expansion of the double;
+Spark rounds its shortest round-tripping decimal string. They disagree wherever
+those differ:
+
+| Expression | Python `round` | PySpark 4.0.0 `bround` |
+|---|---|---|
+| `bround(2.5, 0)` | `2` | `2.0` |
+| `bround(3.5, 0)` | `4` | `4.0` |
+| `bround(2.675, 2)` | `2.67` | **`2.68`** |
+| `bround(1234.5678, -2)` | `1200.0` | `1200.0` |
+
+**Fix**:
+`spark_bround()` shares a `_quantize()` helper with `spark_round()`, so the two
+differ only in their rounding mode and cannot drift on the decimal-string
+detail. Registered in both evaluators.
+
+Known divergence, shared with `spark_round` and therefore left alone: on an
+integral column Spark preserves the integer type where sparkless returns a
+float.
+
+**Regression tests**: `tests/unit/functions/test_least_greatest_operand_shapes.py`
+(`TestBround`, passing under both engines).
+
+### BUG-050: `pow`, `log`, `substring`, `element_at`, `array_distinct` return their first operand
+**Status**: Open
+**Severity**: High
+**File**: `sparkless/dataframe/evaluation/expression_evaluator.py`
+
+Found *by* BUG-038's fix. Making the terminal `return value` warn instead of
+answering silently immediately surfaced five more functions taking the same
+fallthrough from `withColumn`:
+
+```python
+df = spark.createDataFrame([(4.0, 2.0, "hello")], "a double, b double, s string")
+df.withColumn("p", F.pow(F.col("a"), F.col("b")))     # 4.0;      PySpark 16.0
+df.withColumn("p", F.log(F.col("a")))                 # 4.0;      PySpark 1.3862943611198906
+df.withColumn("p", F.substring(F.col("s"), 1, 3))     # 'hello';  PySpark 'hel'
+
+da = spark.createDataFrame([([1, 1, 2],)], "arr array<int>")
+da.withColumn("p", F.array_distinct(F.col("arr")))    # [1,1,2];  PySpark [1,2]
+da.withColumn("p", F.element_at(F.col("arr"), 1))     # [1,1,2];  PySpark 1
+```
+
+Every one is a plausible-looking wrong value rather than a NULL, and
+`substring`/`array_distinct` are right whenever the operand is already short
+enough or already distinct.
+
+Not fixed here: each needs its own reference pass and its own operand-shape
+matrix, and folding five more functions into the least/greatest change would
+have made it unreviewable. They are now *loud* rather than silent, which was
+the point of the warning.
+
+### BUG-049: `greatest`/`least` accept operands of incompatible types
+**Status**: Open
+**Severity**: Low
+**File**: `sparkless/core/variadic.py`
+
+PySpark rejects `F.greatest(int_col, string_col)` at analysis time with
+`[DATATYPE_MISMATCH.DATA_DIFF_TYPES]`. Sparkless returns NULL for every row.
+
+Same family as BUG-042 -- more permissive than the thing being mocked -- but
+deferred rather than fixed: the correct fix is an analysis-time type check
+against the frame's schema, which sparkless has no phase for. Raising a
+`TypeError` from the reducer at collect time would be a guess at the right
+error, in the wrong place, and would fire on rows rather than on the query.
+NULL is at least a documented answer. Recorded so the gap is not rediscovered
+as a mystery.
+
+Related, and also unfixed: sparkless does not perform Spark's implicit numeric
+widening, so `greatest(int_col, double_col)` returns `3` where PySpark returns
+`3.0`. The value is right, the type is not.

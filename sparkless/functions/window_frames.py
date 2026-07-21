@@ -361,6 +361,52 @@ NULL_AWARE_REDUCERS: Dict[str, Callable[[List[Any]], Any]] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Positional functions
+# --------------------------------------------------------------------------- #
+
+
+def frame_first(values: List[Any], *, ignore_nulls: bool = False) -> Any:
+    """First value of the frame, honouring ``ignoreNulls``.
+
+    Positional rather than aggregate, but frame-shaped all the same: which row
+    counts as "first" is decided entirely by the resolved frame. Registering it
+    here is what gives ``first``/``last`` peer groups and explicit
+    ``rowsBetween``/``rangeBetween`` -- each used to re-derive the frame from
+    ``partitionBy``/``orderBy`` by hand and got both wrong (BUG-040).
+    """
+    return _edge(values, ignore_nulls=ignore_nulls, from_end=False)
+
+
+def frame_last(values: List[Any], *, ignore_nulls: bool = False) -> Any:
+    """Last value of the frame, honouring ``ignoreNulls``. See :func:`frame_first`."""
+    return _edge(values, ignore_nulls=ignore_nulls, from_end=True)
+
+
+def _edge(values: List[Any], *, ignore_nulls: bool, from_end: bool) -> Any:
+    """Value at one end of the frame.
+
+    With ``ignore_nulls`` the NULLs are dropped first, so the answer is the
+    outermost *non-NULL* value. Without it a NULL sitting at the edge **is**
+    the answer: Spark's ``last(x)`` over a frame whose last row is NULL
+    returns NULL, it does not fall back to the last non-NULL it saw.
+    """
+    candidates = [v for v in values if v is not None] if ignore_nulls else values
+    if not candidates:
+        return None
+    return candidates[-1] if from_end else candidates[0]
+
+
+#: Frame-shaped positional functions. They receive the frame's values *in frame
+#: order* with NULLs intact, plus the call's ``ignoreNulls`` flag.
+POSITIONAL_REDUCERS: Dict[str, Callable[..., Any]] = {
+    "first": frame_first,
+    "first_value": frame_first,
+    "last": frame_last,
+    "last_value": frame_last,
+}
+
+
 def reduce_frame(function_name: str, values: List[Any]) -> Any:
     """Apply the reducer registered for ``function_name``.
 
@@ -375,4 +421,8 @@ def reduce_frame(function_name: str, values: List[Any]) -> Any:
 
 def has_reducer(function_name: str) -> bool:
     """Whether a window aggregate reducer is registered for this name."""
-    return function_name in REDUCERS or function_name in NULL_AWARE_REDUCERS
+    return (
+        function_name in REDUCERS
+        or function_name in NULL_AWARE_REDUCERS
+        or function_name in POSITIONAL_REDUCERS
+    )

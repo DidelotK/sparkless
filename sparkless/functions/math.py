@@ -423,8 +423,16 @@ class MathFunctions:
         Returns:
             ColumnOperation representing the greatest function.
         """
-        if not columns:
-            raise ValueError("At least one column must be provided")
+        # Spark rejects a single-argument call at analysis time with
+        # [WRONG_NUM_COLUMNS]. Accepting it silently made `greatest(x)` an
+        # identity function -- the same "more permissive than Spark" failure
+        # as BUG-042, where a query that cannot run in production passes its
+        # unit tests.
+        if len(columns) < 2:
+            raise ValueError(
+                f"Function `greatest` should take at least 2 columns, "
+                f"got {len(columns)}"
+            )
 
         base_column = Column(columns[0]) if isinstance(columns[0], str) else columns[0]
         column_names = [
@@ -448,8 +456,15 @@ class MathFunctions:
         Returns:
             ColumnOperation representing the least function.
         """
-        if not columns:
-            raise ValueError("At least one column must be provided")
+        # Spark rejects a single-argument call at analysis time with
+        # [WRONG_NUM_COLUMNS]. Accepting it silently made `least(x)` an
+        # identity function -- the same "more permissive than Spark" failure
+        # as BUG-042, where a query that cannot run in production passes its
+        # unit tests.
+        if len(columns) < 2:
+            raise ValueError(
+                f"Function `least` should take at least 2 columns, got {len(columns)}"
+            )
 
         base_column = Column(columns[0]) if isinstance(columns[0], str) else columns[0]
         column_names = [

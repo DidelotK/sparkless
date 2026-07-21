@@ -14,6 +14,7 @@ import math
 import re
 import base64
 import datetime as dt_module
+import warnings
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
@@ -43,6 +44,18 @@ from ...spark_types import (
     row_keys,
 )
 from ...core.ddl_adapter import parse_ddl_schema
+from ...core.variadic import variadic_reducer
+
+#: Operations whose value legitimately *is* their operand at this level, so
+#: reaching the terminal ``return value`` of
+#: :meth:`ExpressionEvaluator._evaluate_function_call` is the implementation
+#: rather than a gap. ``explode``/``explode_outer`` multiply rows in the
+#: DataFrame planner, not here, so the array passing through unchanged is
+#: correct. Every other name arriving there is an unimplemented function and
+#: warns -- which is how ``pow``, ``log``, ``substring``, ``element_at`` and
+#: ``array_distinct`` were found to be returning their first operand too
+#: (BUG-048).
+_IDENTITY_PASSTHROUGH_FUNCTIONS = frozenset({"explode", "explode_outer"})
 
 #: Operations that this evaluator resolves through
 #: :meth:`ExpressionEvaluator._evaluate_predicate_operation` rather than through
@@ -1084,6 +1097,15 @@ class ExpressionEvaluator:
         if func_name == "expr":
             return self._evaluate_expr_function(row, operation, value)
 
+        # Variadic comparison functions (greatest/least) need *every* operand,
+        # so they are resolved here where `row` is in scope rather than through
+        # the unary `(value, operation)` registry. Before this branch existed
+        # they were not registered at all and fell through to the terminal
+        # `return value` below -- i.e. they answered with their first operand.
+        variadic = variadic_reducer(func_name)
+        if variadic is not None:
+            return variadic(self._resolve_operand_values(row, operation, value))
+
         # Handle nanvl function - needs special handling to evaluate second argument
         if func_name == "nanvl":
             first_val = value
@@ -1149,7 +1171,61 @@ class ExpressionEvaluator:
         if func_name in BOOLEAN_RESULT_OPERATIONS or func_name in _PREDICATE_OPERATIONS:
             return None
 
+        # For a non-boolean operation the identity is still returned, but it is
+        # no longer returned *silently*. `value` here means "the function's
+        # first operand", a *plausible* answer and therefore the worst possible
+        # one: `greatest(a, b)` answered `a`, `bround(v, 2)` answered the
+        # unrounded `v`, and both looked right on any data where the identity
+        # happened to coincide with the real result (BUG-038/045). Say so out
+        # loud, as the window dispatch already does for its own misses, so an
+        # unimplemented function stops being indistinguishable from a computed
+        # one. This is what surfaced BUG-048.
+        if func_name not in _IDENTITY_PASSTHROUGH_FUNCTIONS:
+            warnings.warn(
+                f"Function {func_name!r} is not implemented by sparkless; "
+                f"returning its first operand unchanged. This is a gap in the "
+                f"mock, not a value computed from your data.",
+                UserWarning,
+                stacklevel=2,
+            )
         return value
+
+    def _resolve_operand_values(
+        self, row: Dict[str, Any], operation: Any, first_value: Any
+    ) -> List[Any]:
+        """Resolve every operand of a variadic operation to its value.
+
+        ``ColumnOperation`` stores the first operand on ``column`` (already
+        evaluated by the caller into ``first_value``) and the rest on
+        ``value``. Each of the rest may be a ``Column``, a ``Literal``, a
+        nested ``ColumnOperation``, or a **bare string**: ``F.greatest("a",
+        "b")`` promotes only its first argument to a ``Column`` and leaves the
+        rest as ``str``. A bare string names a column in Spark (a literal needs
+        ``F.lit``), so it is resolved against the row rather than handed to
+        ``evaluate_expression``, which would read it as a literal string --
+        making ``greatest("a", "b")`` disagree with
+        ``greatest(F.col("a"), F.col("b"))`` on the very same data.
+
+        Args:
+            row: The row being evaluated.
+            operation: The variadic ``ColumnOperation``.
+            first_value: The already-evaluated value of ``operation.column``.
+
+        Returns:
+            One value per operand, in argument order, NULLs included.
+        """
+        values: List[Any] = [first_value]
+        rest = getattr(operation, "value", None)
+        if rest is None:
+            return values
+        if not isinstance(rest, (list, tuple)):
+            rest = [rest]
+        for operand in rest:
+            if isinstance(operand, str):
+                values.append(get_row_value(row, operand))
+            else:
+                values.append(self.evaluate_expression(row, operand))
+        return values
 
     def _evaluate_concat(
         self, row: Dict[str, Any], operation: Any, first_value: Any
@@ -2003,6 +2079,7 @@ class ExpressionEvaluator:
             # Math functions
             "abs": self._func_abs,
             "round": self._func_round,
+            "bround": self._func_bround,
             "ceil": self._func_ceil,
             "ceiling": self._func_ceil,  # Alias for ceil
             "floor": self._func_floor,
@@ -2880,6 +2957,24 @@ class ExpressionEvaluator:
         if not isinstance(scale, int) or isinstance(scale, bool):
             scale = 0
         return spark_round(value, scale)
+
+    def _func_bround(self, value: Any, operation: ColumnOperation) -> Any:
+        """Round to the requested scale with Spark's HALF_EVEN ``bround``.
+
+        ``bround`` had no implementation at all: unregistered here, it fell
+        through to ``return value`` and handed back the *unrounded* operand
+        (BUG-045). Delegating to ``spark_bround`` -- which shares its decimal
+        handling with ``spark_round`` -- keeps the two rounding modes from
+        drifting apart.
+        """
+        from ...core.math_utils import spark_bround
+
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return value
+        scale = getattr(operation, "value", 0)
+        if not isinstance(scale, int) or isinstance(scale, bool):
+            scale = 0
+        return spark_bround(value, scale)
 
     def _func_ceil(self, value: Any, operation: ColumnOperation) -> Any:
         """Ceiling function."""

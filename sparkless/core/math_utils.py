@@ -6,7 +6,7 @@ uses banker's rounding (round-half-to-even), so ``round(2.5) == 2``. Spark's
 Spark's ``bround`` is the banker's-rounding variant.
 """
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
 from typing import Any, Optional
 
 
@@ -32,6 +32,42 @@ def spark_round(value: Any, scale: int = 0) -> Optional[float]:
     Returns:
         The rounded value as a float, or ``None`` when it is not a number.
     """
+    return _quantize(value, scale, ROUND_HALF_UP)
+
+
+def spark_bround(value: Any, scale: int = 0) -> Optional[float]:
+    """Round ``value`` to ``scale`` places with Spark's ``bround`` semantics.
+
+    ``bround`` is ``round``'s banker's-rounding sibling: ties go to the nearest
+    **even** digit (``HALF_EVEN``) rather than away from zero, so
+    ``spark_bround(2.5) == 2.0`` and ``spark_bround(3.5) == 4.0`` where
+    ``spark_round`` gives ``3.0`` and ``4.0``.
+
+    It is *not* Python's built-in :func:`round`, despite both being HALF_EVEN.
+    Python rounds the exact binary expansion of the double, Spark rounds its
+    shortest round-tripping decimal string. They disagree wherever the two
+    differ: ``round(2.675, 2) == 2.67`` but Spark's
+    ``bround(2.675, 2) == 2.68`` -- confirmed against PySpark 4.0.0 on
+    OpenJDK 21. Sharing :func:`_quantize` with :func:`spark_round` is what
+    keeps the two functions from drifting apart on that detail.
+
+    Args:
+        value: Number to round. ``None`` and non-numeric input yield ``None``.
+        scale: Decimal places to keep; may be negative.
+
+    Returns:
+        The rounded value as a float, or ``None`` when it is not a number.
+    """
+    return _quantize(value, scale, ROUND_HALF_EVEN)
+
+
+def _quantize(value: Any, scale: int, rounding: str) -> Optional[float]:
+    """Quantize ``value`` to ``scale`` decimal places under ``rounding``.
+
+    Shared by :func:`spark_round` and :func:`spark_bround` so that the two
+    differ *only* in their rounding mode -- the decimal-representation detail
+    that both depend on lives here, once.
+    """
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -43,7 +79,7 @@ def spark_round(value: Any, scale: int = 0) -> Optional[float]:
 
     try:
         quantum = Decimal(1).scaleb(-scale)
-        return float(decimal_value.quantize(quantum, rounding=ROUND_HALF_UP))
+        return float(decimal_value.quantize(quantum, rounding=rounding))
     except (InvalidOperation, OverflowError, ValueError):
         # Scale too large/small to represent: fall back to the unrounded value.
         return float(decimal_value)

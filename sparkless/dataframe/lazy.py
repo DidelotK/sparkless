@@ -1717,6 +1717,22 @@ class LazyEvaluationEngine:
                     }
 
                     def _is_agg_expr(expr: Any) -> bool:
+                        """Whether ``expr`` contains an aggregate anywhere.
+
+                        The check used to look at the *top-level* operation
+                        only, so `F.sum(x)` was recognised but
+                        `F.sqrt(F.sum(x))` was not: the projection stayed
+                        row-wise and returned N rows of NULL where Spark
+                        returns one row with the value (BUG-039). Walking the
+                        whole expression makes wrapping an aggregate work by
+                        construction rather than by enumeration -- the same
+                        move BUG-037 made for the `groupBy().agg()` path.
+
+                        A window function is deliberately *not* descended
+                        into: `F.sum(x).over(w)` contains a `sum` but is
+                        row-wise, one value per row, and collapsing it would
+                        be a far worse bug than the one being fixed.
+                        """
                         if expr is None:
                             return False
                         if (
@@ -1724,13 +1740,25 @@ class LazyEvaluationEngine:
                             and expr._original_column is not None
                         ):
                             return _is_agg_expr(expr._original_column)
-                        if hasattr(expr, "operation"):
-                            if expr.operation in _AGG_OPS:
+                        # F.sum(x).over(w) -- an aggregate *shape* but a
+                        # row-wise result. Stop here.
+                        if hasattr(expr, "window_spec"):
+                            return False
+                        if getattr(expr, "_aggregate_function", None) is not None:
+                            return True
+                        operation = getattr(expr, "operation", None)
+                        if operation is not None:
+                            if operation in _AGG_OPS:
                                 return True
-                            if expr.operation == "cast" and hasattr(
-                                expr.column, "operation"
-                            ):
-                                return _is_agg_expr(expr.column)
+                            if _is_agg_expr(getattr(expr, "column", None)):
+                                return True
+                            operand = getattr(expr, "value", None)
+                            operands = (
+                                operand
+                                if isinstance(operand, (list, tuple))
+                                else [operand]
+                            )
+                            return any(_is_agg_expr(o) for o in operands)
                         return False
 
                     has_aggs = any(_is_agg_expr(c) for c in op_val)
