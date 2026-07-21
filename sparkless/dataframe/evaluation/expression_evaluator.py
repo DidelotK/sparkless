@@ -2701,9 +2701,21 @@ class ExpressionEvaluator:
         return abs(value) if isinstance(value, (int, float)) else value
 
     def _func_round(self, value: Any, operation: ColumnOperation) -> Any:
-        """Round function."""
-        precision = getattr(operation, "precision", 0)
-        return round(value, precision) if isinstance(value, (int, float)) else value
+        """Round to the requested scale, with Spark's HALF_UP semantics.
+
+        The scale is carried on the operation's ``value`` -- ``precision`` has
+        never been an attribute of ``ColumnOperation``, so the previous
+        ``getattr(operation, "precision", 0)`` silently rounded everything to
+        zero decimal places regardless of the scale the caller asked for.
+        """
+        from ...core.math_utils import spark_round
+
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return value
+        scale = getattr(operation, "value", 0)
+        if not isinstance(scale, int) or isinstance(scale, bool):
+            scale = 0
+        return spark_round(value, scale)
 
     def _func_ceil(self, value: Any, operation: ColumnOperation) -> Any:
         """Ceiling function."""

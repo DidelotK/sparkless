@@ -1513,3 +1513,69 @@ that do exist. Only BUG-029 is addressed by `_resolve_operand`.
 
 **Regression tests**: `tests/unit/functions/test_array_column_argument_resolution.py`
 (19 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
+---
+
+### BUG-026: F.round ignores its scale argument and rounds half-to-even
+**Status**: Fixed
+**Severity**: High
+**Discovered**: 2026-07-20
+**File**: `sparkless/core/condition_evaluator.py`, `sparkless/dataframe/evaluation/expression_evaluator.py`
+
+**Description**:
+Two independent defects made `F.round(x, 2)` wrong.
+
+1. **The scale was dropped.** There are three `round` implementations. Two
+   called `round(float(value))` with no scale at all. The third,
+   `ExpressionEvaluator._func_round`, read the scale from
+   `getattr(operation, "precision", 0)` -- but `precision` has never been an
+   attribute of `ColumnOperation`; the scale is carried on `operation.value`.
+   The `getattr` default therefore won every time and rounded to zero decimal
+   places.
+2. **The rounding mode was wrong.** All three used Python's built-in `round`,
+   which rounds halves to even: `round(2.5) == 2`. Spark's `round` rounds
+   halves *away from zero*, giving `3.0`. (Spark's banker's-rounding function
+   is `bround`, a different function.)
+
+Spark also rounds the *decimal* representation of the double rather than its
+exact binary expansion, so `round(2.675, 2)` is `2.68` -- not the `2.67` the
+binary value `2.67499999...` would produce.
+
+**Reproduction**:
+```python
+df.select(F.round(F.col("x") / 3, 2))
+df.select(F.round(F.lit(2.5)), F.round(F.lit(1234.5678), -2))
+```
+
+| expression | PySpark 4.0.0 | Sparkless (before) |
+|---|---|---|
+| `round(10.0/3, 2)` | `3.33` | `3` |
+| `round(3.14159, 2)` | `3.14` | `3` |
+| `round(3.14159, 3)` | `3.142` | `3` |
+| `round(2.5)` | `3.0` | `2` (banker's) |
+| `round(-2.5)` | `-3.0` | `-2` |
+| `round(0.125, 2)` | `0.13` | `0` |
+| `round(2.675, 2)` | `2.68` | `0` |
+| `round(1234.5678, -2)` | `1200.0` | `1235` |
+
+**Confirmed**: 2026-07-20 against PySpark 4.0.0.
+
+**Impact**:
+- Silent, and the result stays numerically plausible -- a money figure rounded
+  to 0 decimals instead of 2 still passes "is not null" and "> 0" assertions.
+- The returned value also changed *type*, from float to int.
+
+**Fix**:
+Added `spark_round()` to `sparkless/core/math_utils.py`, which quantizes via
+`Decimal` with `ROUND_HALF_UP` and derives the decimal from `str(float(v))` --
+reproducing Java's `BigDecimal.valueOf(double)`, which is what Spark rounds.
+All three implementations now read the scale off the operation and delegate to
+it.
+
+**Known related gap (not fixed here)**: `F.bround` has no implementation at all
+and returns `None`. Note that Python's built-in `round` -- the function these
+three sites were wrongly using -- is precisely the correct semantics for
+`bround`.
+
+**Regression tests**: `tests/unit/functions/test_round_scale_argument.py`
+(17 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
