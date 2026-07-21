@@ -674,6 +674,132 @@ class StructType(
         return name in self._field_map
 
 
+# ---------------------------------------------------------------------------
+# Defensive schema copying (BUG-035)
+# ---------------------------------------------------------------------------
+#
+# PySpark's ``createDataFrame`` round-trips the schema through the JVM, so the
+# resulting DataFrame owns a *fresh* StructType with fresh StructField and
+# DataType objects -- ``df.schema is caller_schema`` is False, and so is
+# ``df.schema.fields[0] is caller_schema.fields[0]``.  Sparkless stored the
+# caller's object graph by reference, which makes any in-place mutation of a
+# bound schema leak back into the caller.  That leak is unbounded: the idiom
+#
+#     derived = StructType([StructField("k", StringType()), *SOURCE.fields])
+#
+# shares StructField objects between ``derived`` and ``SOURCE``, so a mutation
+# reached through ``derived`` corrupts ``SOURCE`` for every later user in the
+# same process.  Copying at the bind boundary makes that structurally
+# impossible.  See ``tests/BUG_LOG.md`` BUG-035.
+
+# ``isinstance(x, DataType)`` alone is not sufficient here: when PySpark is
+# installed the sparkless type classes inherit from *PySpark's* DataType, so a
+# genuine PySpark type object is not an instance of the sparkless one.  We
+# therefore test against both -- but only when PySpark is really available,
+# because the ImportError fallback aliases ``PySparkDataType`` to ``object``
+# (which would make the check match everything).
+_DATA_TYPE_CLASSES: Tuple[type, ...] = (
+    (DataType, PySparkDataType) if PYSPARK_AVAILABLE else (DataType,)
+)
+
+
+def copy_data_type(data_type: Any) -> Any:
+    """Return a deep-enough copy of ``data_type``.
+
+    Scalar types are copied shallowly (their state is scalar); nested types
+    (``ArrayType``, ``MapType``, ``StructType``) are copied recursively so no
+    part of the returned graph is shared with the input.
+
+    Args:
+        data_type: The data type to copy.
+
+    Returns:
+        A new data type equal to, but not identical with, ``data_type``.
+    """
+    if isinstance(data_type, StructType):
+        return copy_schema(data_type)
+    if not isinstance(data_type, _DATA_TYPE_CLASSES):
+        # Not a recognised data type (e.g. a stub in a test double) -- returning
+        # it untouched is safer than guessing how to clone it.
+        return data_type
+
+    import copy as _copy
+
+    new_type = _copy.copy(data_type)
+    state = getattr(new_type, "__dict__", None)
+    if not state:
+        return new_type
+    for key, value in list(state.items()):
+        if isinstance(value, _DATA_TYPE_CLASSES):
+            state[key] = copy_data_type(value)
+        elif isinstance(value, dict):
+            state[key] = dict(value)
+        elif isinstance(value, list):
+            state[key] = [
+                copy_data_type(item) if isinstance(item, _DATA_TYPE_CLASSES) else item
+                for item in value
+            ]
+    return new_type
+
+
+def copy_struct_field(field: StructField) -> StructField:
+    """Return a copy of ``field`` that shares no mutable state with it.
+
+    Args:
+        field: The field to copy.
+
+    Returns:
+        A new ``StructField`` equal to, but not identical with, ``field``.
+    """
+    metadata = getattr(field, "metadata", None)
+    new_field = StructField(
+        name=field.name,
+        dataType=copy_data_type(field.dataType),
+        nullable=field.nullable,
+        metadata=dict(metadata) if isinstance(metadata, dict) else metadata,
+        default_value=getattr(field, "default_value", None),
+    )
+    # Carry over any attribute set on the field after construction (sparkless
+    # and downstream code both do this) without re-sharing mutable containers.
+    declared = {"name", "dataType", "nullable", "metadata", "default_value"}
+    for key, value in getattr(field, "__dict__", {}).items():
+        if key in declared or key == "field_type":
+            continue
+        if isinstance(value, _DATA_TYPE_CLASSES):
+            setattr(new_field, key, copy_data_type(value))
+        elif isinstance(value, dict):
+            setattr(new_field, key, dict(value))
+        elif isinstance(value, list):
+            setattr(new_field, key, list(value))
+        else:
+            setattr(new_field, key, value)
+    return new_field
+
+
+def copy_schema(schema: StructType) -> StructType:
+    """Return a copy of ``schema`` that shares no object with the original.
+
+    The returned schema compares equal to the input but shares neither the
+    ``fields`` list, the ``StructField`` objects, nor their ``DataType``
+    objects.  This mirrors PySpark, where ``createDataFrame`` gives the
+    DataFrame a schema deserialised from the JVM rather than the caller's
+    Python object.
+
+    Args:
+        schema: The schema to copy.
+
+    Returns:
+        A new ``StructType`` equal to, but fully disjoint from, ``schema``.
+    """
+    fields = getattr(schema, "fields", None)
+    if not fields:
+        return StructType([], nullable=getattr(schema, "nullable", True))
+    return StructType(
+        [copy_struct_field(field) for field in fields],
+        nullable=getattr(schema, "nullable", True),
+    )
+
+
 @dataclass
 class MockDatabase:
     """Mock database representation."""

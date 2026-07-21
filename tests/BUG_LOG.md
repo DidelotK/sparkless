@@ -8,10 +8,138 @@ This file tracks bugs and issues discovered during test refactoring and developm
 **Total Bugs Logged**: 25
 **Total Bugs Logged**: 29
 **Total Bugs Logged**: 42
+**Total Bugs Logged**: 27
 
 ---
 
 ## Critical Issues
+
+### BUG-043: `createDataFrame` bound the caller's schema object graph by reference
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**File**: `sparkless/session/services/dataframe_factory.py`, `sparkless/spark_types.py`
+
+> Numbering note: 001-034 are claimed on `main` or in open PRs (#20/#22/#25 hold
+> 026/028/029). 035 was the next free number at the time of writing; renumber on
+> merge if it collides.
+
+**Description**:
+`spark.createDataFrame(data, schema=...)` stored the caller's `StructType`
+**by reference** on the resulting DataFrame — not just the same `StructType`, but
+the same `fields` list and the same `StructField` and `DataType` objects:
+
+```python
+df = spark.createDataFrame(rows, schema=my_schema)
+df.schema is my_schema                       # True   (PySpark: False)
+df.schema.fields is my_schema.fields         # True   (PySpark: False)
+df.schema.fields[0] is my_schema.fields[0]   # True   (PySpark: False)
+```
+
+PySpark round-trips the schema through the JVM, so its DataFrame always owns a
+freshly deserialised object graph. Because sparkless did not, **any** in-place
+mutation of a bound schema wrote straight into the caller's object.
+
+That matters far beyond the one DataFrame, because of an idiom that looks
+completely innocuous:
+
+```python
+_SOURCE  = StructType([...])                                       # module level
+_DERIVED = StructType([StructField("k", StringType()), *_SOURCE.fields])
+```
+
+Unpacking shares the `StructField` **objects** between the two schemas. Binding
+`_DERIVED` therefore handed the DataFrame the very objects `_SOURCE` is made of,
+so a mutation reached through the bound schema corrupted `_SOURCE` for every
+later user in the same process — a module-level schema silently degrading
+mid-run.
+
+**Reproduction**:
+```python
+from sparkless import SparkSession
+from sparkless.spark_types import StructType, StructField, StringType, DoubleType
+
+SOURCE = StructType([StructField("a", DoubleType(), nullable=True)])
+DERIVED = StructType([StructField("k", StringType(), nullable=False), *SOURCE.fields])
+
+spark = SparkSession("repro")
+df = spark.createDataFrame([("k1", 1.0)], schema=DERIVED)
+
+df.schema.add_field(StructField("injected", StringType()))
+df.schema.fields[1].nullable = False
+
+len(SOURCE.fields)          # 2     -- PySpark-equivalent: 1
+SOURCE.fields[0].nullable   # False -- PySpark-equivalent: True
+```
+
+**Reference behaviour**:
+Captured from real PySpark 4.0.0 on OpenJDK 21.
+
+| check | PySpark 4.0.0 | Sparkless (before) |
+|---|---|---|
+| `df.schema is caller_schema` | `False` | `True` |
+| `df.schema.fields is caller.fields` | `False` | `True` |
+| `df.schema.fields[0] is caller.fields[0]` | `False` | `True` |
+| `df.schema == caller_schema` | `True` | `True` |
+| `df.schema is df.schema` | `True` | `True` |
+| caller field names after mutating `df.schema` | unchanged | **corrupted** |
+| source schema after binding a schema derived from it | unchanged | **corrupted** |
+
+Note that `StructType(other.fields)` shares the `fields` **list** in PySpark too
+(`self.fields = fields`, no copy), and `StructType.add()` appends to it. That
+aliasing is parity and is deliberately left alone; only the *bind* boundary is
+changed.
+
+**Impact**:
+- Order-dependent, cross-test corruption. The symptom lands in whichever test
+  runs after the polluter, so under `pytest -n auto` it reads as an unrelated
+  flake and gets retried or quarantined instead of fixed. A downstream data
+  platform hit exactly this: a shared module-level schema corrupted 10 other
+  tests in the same file, caught only because a pre-push hook happened to run
+  the parallel configuration.
+- No amount of downstream discipline fixes it — short of forbidding the
+  derived-schema idiom entirely, which is what the downstream repo ended up
+  doing (an "independent literal" copy-pasted from the source schema).
+
+**Fix**:
+- New `copy_schema()` / `copy_struct_field()` / `copy_data_type()` helpers in
+  `sparkless/spark_types.py`. `copy_schema` returns a `StructType` that is equal
+  to its input but shares nothing with it: new `fields` list, new `StructField`
+  objects, new `DataType` objects, copied `metadata` dicts, and recursion
+  through `ArrayType` / `MapType` / nested `StructType`.
+- `DataFrameFactory.create_dataframe` now binds `copy_schema(schema)`. This is
+  the single user-facing bind boundary (`SparkSession.createDataFrame` is its
+  only caller); internally constructed DataFrames already build fresh schemas.
+- `copy_data_type` tests membership against `(DataType, PySparkDataType)` when
+  PySpark is installed, because sparkless's type classes inherit from *PySpark's*
+  `DataType` — `isinstance(x, DataType)` against the sparkless class alone
+  silently misses genuine PySpark type objects. The PySpark class is only added
+  when PySpark is really importable; the ImportError fallback aliases it to
+  `object`, which would otherwise match everything.
+
+**Cost**: `copy_schema` is 4.7 µs for a 3-field schema and 28.5 µs for 20 fields,
+against ~400 µs for a `createDataFrame` call — a few percent, paid once per bind.
+The full `tests/unit` + `tests/parity` suite runs in the same wall clock as
+before (1349 passed, 14 skipped, both trees).
+
+**Not the reported cause**: the downstream report attributed the corruption to
+sparkless mutating shared `StructField` objects *during* a bind. That specific
+mutation does not exist in 4.2.2 — an AST sweep finds only two in-place writes to
+a `DataType` (`functions/base.py:87`, `dataframe/lazy.py:3306`, both on
+freshly-constructed objects), a reflective sweep over all 97 public `DataFrame`
+members leaves a shared source schema byte-identical, and the whole unit+parity
+suite under a `__setattr__` watcher records zero post-construction mutations of
+`StructField`/`DataType` state. What is real is the **aliasing that makes such a
+mutation catastrophic**, and that is what this fix removes: after it, no
+sparkless code path — present or future — can reach a caller-owned schema object.
+
+**Regression tests**:
+`tests/unit/spark_types/test_schema_binding_isolation.py` — 21 tests. 9 fail on
+the unfixed tree (the ownership and leak assertions); the other 12 are guards
+that must keep passing (schema equality, `df.schema is df.schema` stability,
+value round-trip, empty-schema binding, nested-type copies).
+
+---
 
 ### BUG-034: Negation of function results / CASE WHEN ignored three-valued logic
 **Status**: Fixed
