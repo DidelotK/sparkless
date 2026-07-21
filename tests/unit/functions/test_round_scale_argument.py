@@ -34,7 +34,7 @@ def _scalar(spark, column):
 class TestRoundScaleArgument:
     """The scale argument must actually be applied."""
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize(  # type: ignore[misc,untyped-decorator]
         "value,scale,expected",
         [
             (3.14159, 2, 3.14),
@@ -77,7 +77,7 @@ class TestRoundScaleArgument:
 class TestRoundHalfUpSemantics:
     """Spark rounds halves away from zero, not to even."""
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize(  # type: ignore[misc,untyped-decorator]
         "value,expected",
         [
             (2.5, 3.0),  # Python's round() gives 2 here
@@ -93,7 +93,7 @@ class TestRoundHalfUpSemantics:
         F = imports.F
         assert _scalar(spark, F.round(F.lit(value))) == expected
 
-    @pytest.mark.parametrize(
+    @pytest.mark.parametrize(  # type: ignore[misc,untyped-decorator]
         "value,scale,expected",
         [
             (0.125, 2, 0.13),

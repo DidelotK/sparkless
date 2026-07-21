@@ -1516,7 +1516,7 @@ that do exist. Only BUG-029 is addressed by `_resolve_operand`.
 
 ---
 
-### BUG-025: F.round ignores its scale argument and rounds half-to-even
+### BUG-026: F.round ignores its scale argument and rounds half-to-even
 **Status**: Fixed
 **Severity**: High
 **Discovered**: 2026-07-20

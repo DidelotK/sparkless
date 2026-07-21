@@ -23,6 +23,7 @@ def _round_scale(operation: Any) -> int:
         return 0
     return scale
 
+
 logger = logging.getLogger(__name__)
 
 
