@@ -1004,7 +1004,7 @@ reproduction against real PySpark, not derived from the API docs.
 
 ---
 
-### BUG-023: Window.orderBy applies one global sort direction to all keys
+### BUG-024: Window.orderBy applies one global sort direction to all keys
 **Status**: Fixed
 **Severity**: High
 **Discovered**: 2026-07-20
