@@ -14,6 +14,48 @@ class ConditionEvaluator:
     """Shared condition evaluation logic."""
 
     @staticmethod
+    def _kleene_not(value: Optional[bool]) -> Optional[bool]:
+        """SQL three-valued NOT.
+
+        NOT TRUE = FALSE, NOT FALSE = TRUE, NOT NULL = NULL.
+
+        Python's ``not`` operator is *not* a substitute here: ``not None``
+        evaluates to ``True``, which inverts the result for NULL inputs
+        (a NULL predicate must filter the row out, not in).
+        """
+        if value is None:
+            return None
+        return not value
+
+    @staticmethod
+    def _kleene_and(left: Optional[bool], right: Optional[bool]) -> Optional[bool]:
+        """SQL three-valued AND.
+
+        FALSE dominates: ``NULL AND FALSE`` is FALSE (not NULL), because the
+        result is FALSE regardless of what the NULL stands for. Python's
+        ``and`` short-circuits and returns ``None`` for ``None and False``,
+        which is why it cannot be used directly.
+        """
+        if left is False or right is False:
+            return False
+        if left is None or right is None:
+            return None
+        return True
+
+    @staticmethod
+    def _kleene_or(left: Optional[bool], right: Optional[bool]) -> Optional[bool]:
+        """SQL three-valued OR.
+
+        TRUE dominates: ``NULL OR TRUE`` is TRUE (not NULL). Python's ``or``
+        returns ``False`` for ``None or False``, which must be NULL instead.
+        """
+        if left is True or right is True:
+            return True
+        if left is None or right is None:
+            return None
+        return False
+
+    @staticmethod
     def evaluate_expression(row: Dict[str, Any], expression: Any) -> Any:
         """Evaluate an expression (arithmetic, function, etc.) for a given row.
 
@@ -50,7 +92,19 @@ class ConditionEvaluator:
             return ConditionEvaluator._evaluate_column_operation(row, condition)
 
         if isinstance(condition, Column):
-            return get_row_value(row, condition.name) is not None
+            # A bare column used as a predicate must yield its *value*, not a
+            # presence check. For a boolean column PySpark evaluates the stored
+            # boolean under three-valued logic; NULL stays NULL so that both the
+            # row filter and any enclosing NOT/AND/OR see SQL NULL rather than
+            # a coerced False.
+            column_value = get_row_value(row, condition.name)
+            if column_value is None:
+                return None
+            if isinstance(column_value, bool):
+                return column_value
+            # Non-boolean, non-null columns keep the historical truthy
+            # behaviour (PySpark itself rejects these with an AnalysisException).
+            return True
 
         # Unwrap Literal objects
         if hasattr(condition, "value") and not isinstance(
@@ -1481,13 +1535,15 @@ class ConditionEvaluator:
         if operation_type in ["and", "&"]:
             left_result = ConditionEvaluator.evaluate_condition(row, operation.column)
             right_result = ConditionEvaluator.evaluate_condition(row, operation.value)
-            return left_result and right_result
+            return ConditionEvaluator._kleene_and(left_result, right_result)
         elif operation_type in ["or", "|"]:
             left_result = ConditionEvaluator.evaluate_condition(row, operation.column)
             right_result = ConditionEvaluator.evaluate_condition(row, operation.value)
-            return left_result or right_result
+            return ConditionEvaluator._kleene_or(left_result, right_result)
         elif operation_type in ["not", "!"]:
-            return not ConditionEvaluator.evaluate_condition(row, operation.column)
+            return ConditionEvaluator._kleene_not(
+                ConditionEvaluator.evaluate_condition(row, operation.column)
+            )
         else:
             return False
 
@@ -1711,13 +1767,15 @@ class ConditionEvaluator:
         if operation_type in ["and", "&"]:
             left_result = ConditionEvaluator.evaluate_condition(row, operation.column)
             right_result = ConditionEvaluator.evaluate_condition(row, operation.value)
-            return left_result and right_result
+            return ConditionEvaluator._kleene_and(left_result, right_result)
         elif operation_type in ["or", "|"]:
             left_result = ConditionEvaluator.evaluate_condition(row, operation.column)
             right_result = ConditionEvaluator.evaluate_condition(row, operation.value)
-            return left_result or right_result
+            return ConditionEvaluator._kleene_or(left_result, right_result)
         elif operation_type in ["not", "!"]:
-            return not ConditionEvaluator.evaluate_condition(row, operation.column)
+            return ConditionEvaluator._kleene_not(
+                ConditionEvaluator.evaluate_condition(row, operation.column)
+            )
 
         # UDF operations - evaluate the UDF and return its boolean result
         if operation_type == "udf":
