@@ -9,6 +9,7 @@ This file tracks bugs and issues discovered during test refactoring and developm
 **Total Bugs Logged**: 29
 **Total Bugs Logged**: 42
 **Total Bugs Logged**: 27
+**Total Bugs Logged**: 48
 
 ---
 
@@ -114,9 +115,14 @@ of the three source files independently fails a distinct subset.
 ---
 
 ### BUG-047: `<comparison>` against NULL is FALSE/TRUE on the select and filter paths
-**Status**: Open
+**Status**: Fixed — duplicate of BUG-033, fixed by the same change
 **Severity**: High
 **File**: `sparkless/core/condition_evaluator.py` (`_evaluate_comparison`)
+
+> Filed independently while collapsing the predicate schism (BUG-046), and
+> deferred to "the ordering/NULL-semantics sweep" — which is the change that
+> fixed BUG-033. Both entries describe the same defect from the two directions
+> it was found from; see BUG-033 for the fix and the test coverage.
 
 `_evaluate_comparison` short-circuits `if col_value is None or condition_value
 is None: return operation == "!="`. Spark returns NULL for *every* comparison
@@ -134,9 +140,11 @@ The second follows from the first: `_kleene_not` is correct, but it is handed
 this right (`withColumn` returns NULL), so this is the select/filter path only
 — a fourth spelling of the same schism BUG-046 collapsed.
 
-Not fixed here: it moves rows under every `filter` in the suite at once and
-belongs with the ordering/NULL-semantics sweep rather than with a predicate
-fix.
+Not fixed by BUG-046's change: it moves rows under every `filter` in the suite
+at once and belongs with the ordering/NULL-semantics sweep rather than with a
+predicate fix. That sweep is BUG-033: `_evaluate_comparison` is now the single
+comparison kernel for `ConditionEvaluator`, returns `None` for a NULL operand,
+and `_evaluate_comparison_operation` delegates to it.
 
 ---
 
@@ -676,7 +684,7 @@ cluster.
 ---
 
 ### BUG-033: A comparison yielding NULL returns FALSE in a `select` projection
-**Status**: Open
+**Status**: Fixed
 **Severity**: High
 **Discovered**: 2026-07-21
 **File**: `sparkless/core/condition_evaluator.py`
@@ -696,11 +704,50 @@ df.withColumn("f", F.col("x") >= F.lit(5)).collect()   # correct: True, None
 ```
 
 Found while fixing BUG-032 (whose production shape guards the NULL row with a
-`when`, so it is unaffected). Deliberately **not** fixed here: NULL comparison
-semantics govern `filter()` across the whole library, so changing them is a
-behavioural change of a different order than the two bugs above, and it touches
-`_evaluate_comparison_operation`, which open PR #19 also edits. It belongs in
-its own change, alongside the Kleene-logic work of BUG-023.
+`when`, so it is unaffected), and deferred there because it touches
+`_evaluate_comparison_operation`, which an open PR was editing at the time.
+
+**Second defect, same file (found while fixing this one)**: the *predicate*
+path did not share the projection path's kernel at all. It called
+`_evaluate_comparison(col_value, op, condition_value)`, whose NULL branch read
+`return operation == "!="` -- so `NULL != 9` evaluated to **TRUE** and
+`df.filter(F.col("x") != F.lit(9))` kept the NULL row. Three comparison
+implementations existed in total (two here, one in `ExpressionEvaluator`), of
+which only `ExpressionEvaluator`'s was correct.
+
+**Reference behaviour** (real PySpark 4.0.0, OpenJDK 21):
+```
+select(x >= 5)   -> [('a', True), ('b', None), ('c', False)]
+select(x != 9)   -> [('a', False), ('b', None), ('c', True)]
+select(~(x>=5))  -> [('a', False), ('b', None), ('c', True)]
+filter(x != 9)   -> ['c']          # NULL row dropped, not kept
+filter(~(x>=5))  -> ['c']          # NOT NULL is NULL, not TRUE
+```
+
+**Fix**:
+- `_evaluate_comparison()` is now the single comparison kernel for this
+  evaluator: it returns `None` (not `False`, and not `operation == "!="`) when
+  either operand is NULL, accepts both the symbolic and the named operator
+  aliases, keeps the existing type coercion, and maps an unreconcilable
+  `TypeError` to NULL the way `ExpressionEvaluator` already did.
+- `_evaluate_comparison_operation()` now resolves its operands and delegates to
+  that kernel instead of carrying its own comparison ladder -- the same
+  "predicate path delegates to the shared implementation" move as BUG-034.
+- Return types widened to `Optional[bool]`.
+
+`filter()` semantics are unchanged for TRUE/FALSE and now drop NULL-predicate
+rows in the cases where the old code coerced NULL to TRUE.
+
+Also filed independently as **BUG-047** while BUG-046 was collapsing the
+predicate schism, and deferred there to this sweep.
+
+**Tests**:
+- `tests/parity/dataframe/test_null_comparison_semantics.py` (new, 21 tests,
+  backend-agnostic `spark` fixture; all 21 also pass under
+  `MOCK_SPARK_TEST_BACKEND=pyspark` against PySpark 4.0.0). Reverting the NULL
+  branch to `return operation == "!="` fails 17 of the 21. The negation tests
+  in that file are parametrised over `select` and `withColumn`, so they also
+  guard BUG-046's `~` fix on the projection path.
 
 ---
 
@@ -2019,9 +2066,10 @@ bespoke branches; routing them through `resolve_frame()` is the natural fix, but
 it interacts with `ignoreNulls`, which was not probed.
 
 ### BUG-041: ORDER BY sorts NULLs last; Spark sorts them first on ASC
-**Status**: Open
+**Status**: Fixed
 **Severity**: Medium
-**File**: `sparkless/functions/window_execution.py` (`_sort_indices_by_columns`)
+**Files**: `sparkless/spark_types.py`, `sparkless/functions/window_execution.py`,
+`sparkless/dataframe/window_handler.py`, `sparkless/dataframe/lazy.py`
 
 Spark's default is `ASC NULLS FIRST` / `DESC NULLS LAST` -- which is why
 `asc_nulls_last()` exists as an explicit variant. `_sort_indices_by_columns`
@@ -2030,8 +2078,62 @@ defaults to `nulls_last = True` for a plain ascending sort. Verified: with keys
 every subsequent row's running total includes it.
 
 Affects `row_number`, `rank`, `dense_rank`, `lag`/`lead` and the new frame
-engine alike -- one shared helper, so a one-line change, but it moves rows under
-every window function at once and needs its own verification pass.
+engine alike -- and it moves rows under every window function at once, so it
+needed its own verification pass.
+
+**Not one helper, but three.** The direction-parsing block was duplicated across
+`window_execution._sort_indices_by_columns` (rank/row_number/frames),
+`window_handler._apply_ordering_to_indices` (lag/lead) and the `orderBy` branch
+of `lazy._materialize` (plain `DataFrame.orderBy`/`sort`). All three defaulted
+ascending sorts to NULLS LAST, and `lazy`'s copy had drifted further -- it also
+mapped `F.asc_nulls_last` and `F.asc` to the same spec, so the explicit variant
+was indistinguishable from the default.
+
+**Reference behaviour** (real PySpark 4.0.0, OpenJDK 21), rows
+`[(a,1) (b,2) (c,4) (d,NULL) (e,2)]`:
+```
+orderBy("k")                  -> d a b e c     # ASC  NULLS FIRST
+orderBy(col("k").desc())      -> c b e a d     # DESC NULLS LAST
+orderBy("k", ascending=False) -> c b e a d
+asc_nulls_last                -> a b e c d
+desc_nulls_first              -> d c b e a
+orderBy("g","k")              -> e c d a b     # per-key NULL placement
+row_number over orderBy("k")  -> d=1 a=2 b=3 e=4 c=5
+sum("k")   over orderBy("k")  -> d=NULL a=1 b=5 e=5 c=9
+lag("id")  over orderBy("k")  -> d=NULL a=d b=a e=b c=e
+```
+
+**Fix**:
+`spark_types.resolve_order_key(col, default_ascending=True)` resolves one order
+key into `(column_name, is_desc, nulls_last)` and is now the only place that
+maps a direction to a NULL placement; the three call sites were replaced with a
+call to it. Default `nulls_last` mirrors the direction (ASC -> first,
+DESC -> last); the explicit `*_nulls_*` variants override it.
+
+**Not changed**: sparkless emits rows in input order after
+`df.withColumn(<window expr>)` where Spark happens to emit them in window-sort
+order. Spark does not guarantee that order without an explicit `orderBy`, so it
+is not pinned by the tests.
+
+**Tests**:
+- `tests/parity/dataframe/test_null_ordering.py` (new, 28 tests,
+  backend-agnostic `spark` fixture; all 28 also pass under
+  `MOCK_SPARK_TEST_BACKEND=pyspark` against PySpark 4.0.0). Covers single key,
+  multi-key, mixed ASC/DESC, all four explicit variants, string keys, an
+  all-NULL key, NULLs in the partition key, and window vs plain `orderBy`.
+  Restoring the NULLS LAST default fails 18 of them; corrupting the explicit
+  variants instead fails the other 10.
+
+### BUG-048: `sum()` over an integer column returns a float
+**Status**: Open
+**Severity**: Low
+**Discovered**: 2026-07-21
+
+Noticed while capturing the BUG-041 window reference. `F.sum("k")` over an
+`IntegerType` column returns `1.0`/`5.0` in sparkless where PySpark 4.0.0
+returns `1`/`5` (SUM of an integral type is `bigint`). Values agree; only the
+type differs, so it surfaces as `Row(rs=5.0)` vs `Row(rs=5)` in strict
+comparisons.
 
 ### BUG-042: DISTINCT aggregates over a window are accepted
 **Status**: Open

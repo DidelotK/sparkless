@@ -8,7 +8,7 @@ following the Single Responsibility Principle.
 from typing import Any, Dict, List, Tuple
 import sys
 
-from ..spark_types import get_row_value, sort_indices_multi_key
+from ..spark_types import get_row_value, resolve_order_key, sort_indices_multi_key
 
 
 class WindowFunctionHandler:
@@ -245,39 +245,10 @@ class WindowFunctionHandler:
         directions: List[Tuple[bool, bool]] = []
 
         for col in order_by_cols:
-            # Handle ColumnOperation objects (like col("salary").desc())
-            operation = None
-            nulls_last = True  # Default: nulls last
-            is_desc = False
-
-            if hasattr(col, "operation"):
-                operation = col.operation
-                # Check for nulls variant operations
-                if operation == "desc_nulls_last":
-                    is_desc = True
-                    nulls_last = True
-                elif operation == "desc_nulls_first":
-                    is_desc = True
-                    nulls_last = False
-                elif operation == "asc_nulls_last":
-                    is_desc = False
-                    nulls_last = True
-                elif operation == "asc_nulls_first":
-                    is_desc = False
-                    nulls_last = False
-                elif operation == "desc":
-                    is_desc = True
-                    nulls_last = True  # Default for desc
-                elif operation == "asc":
-                    is_desc = False
-                    nulls_last = True  # Default for asc
-
-            if hasattr(col, "column") and hasattr(col.column, "name"):
-                col_name = col.column.name
-            elif hasattr(col, "name"):
-                col_name = col.name
-            else:
-                col_name = str(col)
+            # Shared resolver so NULL placement matches DataFrame.orderBy and
+            # the rank/row_number ordering helper (Spark: ASC NULLS FIRST /
+            # DESC NULLS LAST).
+            col_name, is_desc, nulls_last = resolve_order_key(col)
 
             def make_key_func(name: str = col_name) -> Any:
                 return lambda idx: get_row_value(data[idx], name)

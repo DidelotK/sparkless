@@ -24,6 +24,16 @@ def _round_scale(operation: Any) -> int:
     return scale
 
 
+#: Named comparison aliases accepted alongside their symbolic form.
+_COMPARISON_ALIASES: Dict[str, str] = {
+    "eq": "==",
+    "ne": "!=",
+    "lt": "<",
+    "le": "<=",
+    "gt": ">",
+    "ge": ">=",
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -1617,15 +1627,20 @@ class ConditionEvaluator:
     @staticmethod
     def _evaluate_comparison_operation(
         row: Dict[str, Any], operation: ColumnOperation
-    ) -> bool:
-        """Evaluate a comparison operation.
+    ) -> Optional[bool]:
+        """Evaluate a comparison operation against a row.
+
+        Resolves both operands, then defers to the shared
+        :meth:`_evaluate_comparison` kernel so that a projection
+        (``df.select(col("x") >= 5)``) and a predicate
+        (``df.filter(col("x") >= 5)``) agree on NULL handling.
 
         Args:
             row: The data row to evaluate against.
             operation: The comparison operation to evaluate.
 
         Returns:
-            The comparison result.
+            The comparison result, or ``None`` when either operand is NULL.
         """
         left_value = ConditionEvaluator._get_column_value(row, operation.column)
         right_value = ConditionEvaluator._get_column_value(row, operation.value)
@@ -1645,24 +1660,9 @@ class ConditionEvaluator:
         ):
             right_value = right_value.value
 
-        if left_value is None or right_value is None:
-            return False
-
-        operation_type = operation.operation
-        if operation_type in ["==", "eq"]:
-            return cast("bool", left_value == right_value)
-        elif operation_type in ["!=", "ne"]:
-            return cast("bool", left_value != right_value)
-        elif operation_type in ["<", "lt"]:
-            return cast("bool", left_value < right_value)
-        elif operation_type in ["<=", "le"]:
-            return cast("bool", left_value <= right_value)
-        elif operation_type in [">", "gt"]:
-            return cast("bool", left_value > right_value)
-        elif operation_type in [">=", "ge"]:
-            return cast("bool", left_value >= right_value)
-        else:
-            return False
+        return ConditionEvaluator._evaluate_comparison(
+            left_value, cast("str", operation.operation), right_value
+        )
 
     @staticmethod
     def _evaluate_logical_operation(
@@ -2580,37 +2580,58 @@ class ConditionEvaluator:
     @staticmethod
     def _evaluate_comparison(
         col_value: Any, operation: str, condition_value: Any
-    ) -> bool:
-        """Evaluate comparison operations.
+    ) -> Optional[bool]:
+        """Evaluate a scalar comparison under SQL three-valued logic.
+
+        This is the single comparison kernel for this evaluator: both the
+        predicate path (``_evaluate_column_operation``) and the value/projection
+        path (``_evaluate_comparison_operation``) route through it, so a
+        ``select`` and a ``filter`` can no longer disagree about the same
+        expression.
 
         Args:
-            col_value: Column value.
-            operation: Comparison operation.
-            condition_value: Value to compare against.
+            col_value: Left-hand value (already resolved against the row).
+            operation: Comparison operator, as a symbol (``==``, ``!=``, ``<``,
+                ``<=``, ``>``, ``>=``) or its named alias (``eq``, ``ne``,
+                ``lt``, ``le``, ``gt``, ``ge``).
+            condition_value: Right-hand value (already resolved).
 
         Returns:
-            True if comparison is true.
+            The comparison result, or ``None`` when either operand is NULL --
+            ``NULL > 5`` is NULL in SQL, not FALSE. The distinction is
+            load-bearing: ``NOT (NULL > 5)`` is NULL, not TRUE, so collapsing
+            to FALSE here flips the sign of any enclosing negation.
         """
+        # NULL propagates: an unknown operand makes the whole comparison
+        # unknown, `!=` included (`NULL != 9` is NULL, not TRUE).
         if col_value is None or condition_value is None:
-            return operation == "!="  # Only != returns True for null values
+            return None
+
+        op = _COMPARISON_ALIASES.get(operation, operation)
 
         # Apply coercion if types are different
         coerced_left, coerced_right = ConditionEvaluator._coerce_for_comparison(
             col_value, condition_value
         )
 
-        if operation == "==":
-            return bool(coerced_left == coerced_right)
-        elif operation == "!=":
-            return bool(coerced_left != coerced_right)
-        elif operation == ">":
-            return bool(coerced_left > coerced_right)
-        elif operation == ">=":
-            return bool(coerced_left >= coerced_right)
-        elif operation == "<":
-            return bool(coerced_left < coerced_right)
-        elif operation == "<=":
-            return bool(coerced_left <= coerced_right)
+        try:
+            if op == "==":
+                return bool(coerced_left == coerced_right)
+            elif op == "!=":
+                return bool(coerced_left != coerced_right)
+            elif op == ">":
+                return bool(coerced_left > coerced_right)
+            elif op == ">=":
+                return bool(coerced_left >= coerced_right)
+            elif op == "<":
+                return bool(coerced_left < coerced_right)
+            elif op == "<=":
+                return bool(coerced_left <= coerced_right)
+        except TypeError:
+            # Operand types that coercion could not reconcile. PySpark would
+            # have rejected the plan at analysis time; NULL is the closest
+            # runtime approximation and matches the withColumn path.
+            return None
 
         return False
 
