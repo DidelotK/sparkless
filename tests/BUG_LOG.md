@@ -1059,3 +1059,80 @@ Nulls are now ordered with a rank sentinel instead of by substituting
 
 **Regression tests**: `tests/unit/dataframe/test_window_orderby_per_key_direction.py`
 (12 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
+
+---
+
+### BUG-025: Aggregating over an expression collapses to the empty default
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-20
+**File**: `sparkless/dataframe/grouped/base.py`, `sparkless/functions/window_execution.py`
+
+**Description**:
+`F.sum(F.when(cond, x))` returned a constant **`0`** -- in both `groupBy().agg()`
+and over a window.
+
+An aggregate whose target is an *expression* (rather than a plain column) has to
+evaluate that expression for every row. Sparkless gated its per-row branch on
+the target exposing an `.operation` attribute. `ColumnOperation` has one;
+`CaseWhen` does **not**. So every `F.when(...)` fell through to the plain-column
+path, which looked up a column literally named `"CASE WHEN"`, missed on every
+row, and returned the aggregate's empty default -- `0` for `sum`, `None` for
+`avg`/`max`/`min`.
+
+The window path was worse: it addresses its input purely by *name*
+(`get_row_value(row, self.column_name)`), where `column_name` holds only the
+rendered expression text. **Any** expression target was therefore broken there,
+including plain arithmetic -- `F.sum(F.col("x") * 2).over(w)` returned `0`.
+
+**Reproduction**:
+```python
+df = spark.createDataFrame(
+    [("a", 10.0, True), ("a", 20.0, False), ("b", 40.0, False)],
+    ["grp", "x", "flag"],
+)
+df.groupBy("grp").agg(F.sum(F.when(F.col("flag"), F.col("x"))).alias("s")).collect()
+df.withColumn("s", F.sum(F.col("x") * 2).over(Window.partitionBy("grp"))).collect()
+```
+
+| expression | PySpark 4.0.0 | Sparkless (before) |
+|---|---|---|
+| `agg sum(when(flag, x))` | `a=10.0, b=None` | `a=0, b=0` |
+| `window sum(when(flag, x))` | `10.0, 10.0, None` | `0.0, 0.0, 0.0` |
+| `window sum(x * 2)` | `60.0, 60.0, 80.0` | `0.0, 0.0, 0.0` |
+| `window avg(x * 2)` | `30.0, 30.0, 80.0` | `None, None, None` |
+
+**Confirmed**: 2026-07-20 against PySpark 4.0.0.
+
+**Impact**:
+- Silent. `0` is a plausible conditional sum, so assertions of "is not null" or
+  "sum >= 0" pass on a garbage value. This shape is common in production code
+  (`sum(when(cond, 1).otherwise(0))` is the standard conditional-count idiom).
+- Independent of BUG-025 (three-valued boolean logic): the `when()` predicate is
+  evaluated by `ConditionalEvaluator`, not by the filter path, and
+  `sum(when(flag, x))` returns the correct value with or without that fix.
+
+**Fix**:
+- Added `is_row_evaluatable_expression()` to `sparkless/core/protocols.py`,
+  which recognises both `ColumnOperation` (via `.operation`) and `CaseWhen`
+  (via its `conditions`/`default_value` pair, see `CaseWhenLike`). The four
+  aggregate branches -- `sum`, `avg`, `max`, `min` -- now gate on it.
+- `WindowFunction` now captures its target expression and pre-computes it once
+  per row into a synthetic column before dispatch
+  (`_with_materialized_target`), so every existing window evaluator keeps
+  working unchanged.
+
+**Also corrected -- SUM over nothing is NULL, not 0**:
+Spark's `SUM` returns **NULL** when there is no non-NULL value to add up.
+Sparkless returned `0`, which is the same silent-zero failure by another route
+(`sum(when(cond, x))` over a group where nothing matches is exactly this case).
+Both the grouped and the window implementations now return NULL. Verified: zero
+new test failures across `tests/unit` + `tests/parity`.
+
+**Known remaining gap (not fixed here)**: `max`, `min`, `collect_set`,
+`collect_list` and `stddev` over a window return `None` even for a *plain*
+column -- they are missing from `WindowFunction.evaluate()`'s dispatch entirely.
+That is a separate, additive fix.
+
+**Regression tests**: `tests/unit/dataframe/test_aggregate_over_expression.py`
+(15 tests, passing under both Sparkless and `MOCK_SPARK_TEST_BACKEND=pyspark`).
