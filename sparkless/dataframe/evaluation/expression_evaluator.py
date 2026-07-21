@@ -629,133 +629,28 @@ class ExpressionEvaluator:
 
             return result
 
-        # Handle struct function - collects multiple values into a struct/dict
-        if func_name == "struct":
-            result = {}
-            all_values: List[Any] = []
-            all_names: List[str] = []  # Store column names for struct fields
+        # Handle struct / named_struct - collects multiple values into a dict.
+        # Field naming and argument unpacking live in core.struct_builder so
+        # this path and ConditionEvaluator (used by the lazy select path)
+        # cannot drift apart.
+        if func_name in ("struct", "named_struct"):
+            from ...core.struct_builder import build_struct_value
 
-            # Check if operation.value contains all columns (when first is Literal)
-            # or if we need to get first from column
-            if hasattr(operation, "value") and operation.value is not None:
-                # Check if operation.value contains all columns (including first)
-                # This happens when the first column is a Literal
-                if (
-                    isinstance(operation.value, (list, tuple))
-                    and len(operation.value) > 0
-                ):
-                    # Check if first item is a Literal - if so, all columns are in value
-                    first_item = operation.value[0]
-                    if hasattr(first_item, "value") and hasattr(first_item, "name"):
-                        # All columns are in operation.value (first is Literal)
-                        for item in operation.value:
-                            if hasattr(item, "value") and hasattr(item, "name"):
-                                # It's a Literal
-                                all_values.append(self._get_literal_value(item))
-                                all_names.append(
-                                    item.name
-                                    if hasattr(item, "name")
-                                    else f"col{len(all_names) + 1}"
-                                )
-                            elif hasattr(item, "name"):
-                                # It's a Column - get from row
-                                col_name = item.name
-                                if (
-                                    isinstance(col_name, str)
-                                    and "<sparkless.functions.core.literals.Literal"
-                                    in col_name
-                                ):
-                                    # Can't extract - skip
-                                    pass
-                                else:
-                                    all_values.append(get_row_value(row, col_name))
-                                    all_names.append(col_name)
-                            elif hasattr(item, "operation") and hasattr(item, "column"):
-                                # It's a ColumnOperation - evaluate it
-                                all_values.append(self.evaluate_expression(row, item))
-                                # Get the original column name if possible
-                                if hasattr(item, "column") and hasattr(
-                                    item.column, "name"
-                                ):
-                                    all_names.append(item.column.name)
-                                else:
-                                    all_names.append(f"col{len(all_names) + 1}")
-                            else:
-                                all_values.append(item)
-                                all_names.append(f"col{len(all_names) + 1}")
-                    else:
-                        # First column is in operation.column, rest in operation.value
-                        if value is not None:
-                            all_values.append(value)
-                            # Get first column name
-                            if hasattr(operation, "column") and hasattr(
-                                operation.column, "name"
-                            ):
-                                all_names.append(operation.column.name)
-                            else:
-                                all_names.append(f"col{len(all_names) + 1}")
-                        # Add remaining values from operation.value
-                        for item in operation.value:
-                            if hasattr(item, "value") and hasattr(item, "name"):
-                                all_values.append(self._get_literal_value(item))
-                                all_names.append(
-                                    item.name
-                                    if hasattr(item, "name")
-                                    else f"col{len(all_names) + 1}"
-                                )
-                            elif hasattr(item, "name"):
-                                col_name = item.name
-                                if (
-                                    isinstance(col_name, str)
-                                    and "<sparkless.functions.core.literals.Literal"
-                                    in col_name
-                                ):
-                                    pass
-                                else:
-                                    all_values.append(get_row_value(row, col_name))
-                                    all_names.append(col_name)
-                            elif hasattr(item, "operation") and hasattr(item, "column"):
-                                all_values.append(self.evaluate_expression(row, item))
-                                # Get the original column name if possible
-                                if hasattr(item, "column") and hasattr(
-                                    item.column, "name"
-                                ):
-                                    all_names.append(item.column.name)
-                                else:
-                                    all_names.append(f"col{len(all_names) + 1}")
-                            else:
-                                all_values.append(item)
-                                all_names.append(f"col{len(all_names) + 1}")
-                else:
-                    # Single value in operation.value
-                    if value is not None:
-                        all_values.append(value)
-                    if hasattr(operation.value, "value") and hasattr(
-                        operation.value, "name"
-                    ):
-                        all_values.append(self._get_literal_value(operation.value))
-                    elif hasattr(operation.value, "name"):
-                        col_name = operation.value.name
-                        if not (
-                            isinstance(col_name, str)
-                            and "<sparkless.functions.core.literals.Literal" in col_name
-                        ):
-                            all_values.append(get_row_value(row, col_name))
-                    else:
-                        all_values.append(operation.value)
-            else:
-                # No operation.value - only first column
-                if value is not None:
-                    all_values.append(value)
+            def _resolve_struct_arg(item: Any) -> Any:
+                from ...functions.core.literals import Literal as _Literal
 
-            # Create struct with field names - use original column names if available
-            for idx, val in enumerate(all_values):
-                if idx < len(all_names):
-                    result[all_names[idx]] = val
-                else:
-                    result[f"col{idx + 1}"] = val
+                if isinstance(item, _Literal):
+                    return self._get_literal_value(item)
+                if isinstance(item, str):
+                    return get_row_value(row, item)
+                if hasattr(item, "operation") and getattr(item, "operation", None):
+                    return self.evaluate_expression(row, item)
+                name = getattr(item, "name", None)
+                if name is not None:
+                    return get_row_value(row, name)
+                return item
 
-            return result
+            return build_struct_value(operation, _resolve_struct_arg)
 
         # Handle array function - collects multiple values into an array
         # array() creates an array containing the values from each column as elements

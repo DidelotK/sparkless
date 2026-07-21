@@ -5,9 +5,12 @@ This module provides shared condition evaluation logic to avoid duplication
 between DataFrame and conditional function modules.
 """
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 from ..functions.base import Column, ColumnOperation
 from ..spark_types import get_row_value
+
+logger = logging.getLogger(__name__)
 
 
 class ConditionEvaluator:
@@ -182,6 +185,12 @@ class ConditionEvaluator:
                     return cast("bool", left_value % right_value)
             except (TypeError, ValueError):
                 return None
+
+        # Struct construction. Collected here rather than in the function
+        # whitelist below because struct returns a composite value (a dict of
+        # field name -> value) instead of a scalar.
+        elif operation_type in ("struct", "named_struct"):
+            return ConditionEvaluator._evaluate_struct_operation(row, operation)
 
         # Cast operations
         elif operation_type == "cast":
@@ -363,8 +372,36 @@ class ConditionEvaluator:
         elif operation_type in ["and", "&", "or", "|", "not", "!"]:
             return ConditionEvaluator._evaluate_logical_operation(row, operation)
 
-        # Default fallback
+        # Default fallback. Reaching here means `operation_type` matched none
+        # of the branches above, i.e. the operation is unimplemented rather
+        # than genuinely NULL -- the two are indistinguishable downstream, so
+        # log it to keep the gap diagnosable.
+        logger.debug(
+            "ConditionEvaluator has no value handler for operation %r; "
+            "returning NULL. This is an unimplemented operation, not a SQL NULL.",
+            operation_type,
+        )
         return None
+
+    @staticmethod
+    def _evaluate_struct_operation(
+        row: Dict[str, Any], operation: ColumnOperation
+    ) -> Dict[str, Any]:
+        """Evaluate a ``struct`` / ``named_struct`` operation to a dict.
+
+        Args:
+            row: The data row to evaluate against.
+            operation: The struct operation to evaluate.
+
+        Returns:
+            Mapping of struct field name to evaluated value.
+        """
+        from .struct_builder import build_struct_value
+
+        def resolve(item: Any) -> Any:
+            return ConditionEvaluator._get_column_value(row, item)
+
+        return build_struct_value(operation, resolve)
 
     @staticmethod
     def _evaluate_function_operation_value(

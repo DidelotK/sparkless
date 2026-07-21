@@ -302,3 +302,50 @@ def is_column_expression(obj: Any) -> bool:
         True if object is a column expression, False otherwise
     """
     return is_column(obj) or is_column_operation(obj) or is_aggregate_function(obj)
+
+
+#: Operations whose result is BOOLEAN in Spark SQL: the comparison operators,
+#: the logical connectives, and the null/pattern/membership predicates.
+#: Type inference has to agree across the several places that infer an
+#: expression's type, so the set lives here rather than being spelled out
+#: inline at each one.
+BOOLEAN_RESULT_OPERATIONS: frozenset = frozenset(
+    {
+        # Comparisons
+        "==",
+        "!=",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "eqNullSafe",
+        # Logical connectives
+        "and",
+        "&",
+        "or",
+        "|",
+        "not",
+        "!",
+        # Predicates
+        "isNull",
+        "isnull",
+        "isNotNull",
+        "isnotnull",
+        "isnan",
+        "isin",
+        "like",
+        "ilike",
+        "rlike",
+        "contains",
+        "startswith",
+        "endswith",
+        "between",
+        "array_contains",
+    }
+)

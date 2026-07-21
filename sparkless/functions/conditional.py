@@ -7,7 +7,7 @@ This module contains conditional functions including CASE WHEN expressions.
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple, Union, cast
 from sparkless.functions.base import Column, ColumnOperation
 from sparkless.core.condition_evaluator import ConditionEvaluator
-from sparkless.core.type_utils import get_expression_name
+from sparkless.core.type_utils import BOOLEAN_RESULT_OPERATIONS, get_expression_name
 from sparkless.spark_types import get_row_value
 
 if TYPE_CHECKING:
@@ -303,6 +303,7 @@ class CaseWhen:
         """Infer the result type from condition values."""
         from ..spark_types import (
             BooleanType,
+            DataType,
             IntegerType,
             StringType,
             DoubleType,
@@ -359,6 +360,15 @@ class CaseWhen:
                     elif val.operation in ["round"]:
                         # Round operations return DoubleType
                         return DoubleType(nullable=False)
+                    elif val.operation in BOOLEAN_RESULT_OPERATIONS:
+                        # Comparisons, logical connectives and null/pattern
+                        # predicates are BOOLEAN, not STRING.
+                        return BooleanType(nullable=False)
+                    elif val.operation == "cast":
+                        cast_type = getattr(val, "value", None)
+                        if isinstance(cast_type, DataType):
+                            return cast_type
+                        return StringType(nullable=False)
                     else:
                         # Default to StringType for other operations
                         return StringType(nullable=False)
@@ -460,12 +470,17 @@ class CaseWhen:
                 return left_value / right_value if right_value != 0 else None
             elif operation.operation == "%":
                 return left_value % right_value if right_value != 0 else None
-        elif operation.operation == "create_map":
-            # Handle create_map - delegate to ConditionEvaluator
-            return ConditionEvaluator.evaluate_expression(row, operation)
         else:
-            # For other operations, try to get the column value
-            return ConditionEvaluator._get_column_value(row, operation.column)
+            # Every other operation - comparisons, logical connectives, and
+            # the ~150 scalar functions - is evaluated by the shared
+            # ConditionEvaluator.
+            #
+            # This branch used to return `operation.column`'s value, silently
+            # discarding the operation itself: `F.when(c, x).otherwise(
+            # F.datediff(a, b) >= 30)` returned the day count instead of the
+            # boolean, and `.otherwise(F.upper(col))` returned the unmodified
+            # string. The wrong value was plausible enough to pass unnoticed.
+            return ConditionEvaluator.evaluate_expression(row, operation)
 
 
 class ConditionalFunctions:
