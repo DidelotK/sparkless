@@ -2,6 +2,11 @@
 
 ## 4.2.3
 
+> **Never published.** The publish run for this version failed before uploading
+> anything (`twine --skip-existing` is not supported by the Azure Artifacts
+> feed), so there is no 4.2.3 artifact on the feed and no `v4.2.3` tag. These
+> fixes shipped in **4.2.4** instead — do not go looking for 4.2.3.
+
 ### Patch Changes
 
 - 650bb47: Built-in function fixes: `F.round` honours its `scale` argument and rounds HALF_UP, `least`/`greatest`/`bround` are implemented, `array_except`/`array_intersect` are added, `Column` arguments are resolved wherever a function accepts one, and `last_day`/`trunc` plus date predicates evaluate correctly.
