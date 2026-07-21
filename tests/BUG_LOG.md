@@ -16,6 +16,118 @@ This file tracks bugs and issues discovered during test refactoring and developm
 
 ## Critical Issues
 
+### BUG-051: A nested CASE WHEN was never evaluated
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**Files**: `sparkless/dataframe/evaluation/evaluators/conditional_evaluator.py`,
+`sparkless/functions/conditional.py`
+
+A `when` branch whose value is *itself* a `when(...).otherwise(...)` was not
+recognised as an expression. `CaseWhen` is neither a `Column` nor a
+`ColumnOperation`, and the two evaluation paths each mishandled it differently:
+
+```python
+inner  = F.when(F.col("a") <= F.col("ub"), F.lit(1)).otherwise(F.lit(0))
+nested = F.when(F.col("lb").isNotNull(), inner).otherwise(F.lit(0))
+
+df.select(nested)      # sparkless [None, None, 0]   PySpark [1, 0, 0]
+df.agg(F.sum(nested))  # sparkless ColumnOperation   PySpark 1
+```
+
+* `ConditionalEvaluator.evaluate_case_when` fell through to its terminal
+  `return value` and handed back the **unevaluated `CaseWhen` object**. `F.sum`
+  then folded that object into its accumulator (`acc + CaseWhen`), yielding a
+  `ColumnOperation` where a number belonged. Downstream this surfaced as
+  `TypeError: int() argument must be ... not 'ColumnOperation'` — the only loud
+  symptom of the whole family.
+* `CaseWhen._evaluate_value` matched the `hasattr(value, "name")` fallback,
+  because a `CaseWhen` carries a generated `.name` (`"CASE WHEN ... END"`). It
+  was looked up as though it were a *column of that name*; no such column
+  exists, so the branch silently evaluated to NULL.
+
+Same family as BUG-038/BUG-046/BUG-050: an unhandled expression type reaching a
+terminal `return value`, answering plausibly rather than failing.
+
+**Fix**: both paths now dispatch a nested `CaseWhen` to a real evaluation —
+`_resolve_branch_value` recurses via the base evaluator, and
+`CaseWhen._evaluate_value` recurses via `value.evaluate(row)`. The
+`ColumnOperation` branch also stopped falling through to an implicit `None`.
+
+**Regression tests**: `tests/parity/functions/test_nested_case_when_parity.py`
+(11 tests, passing under both engines).
+
+### BUG-052: `last_day` and `trunc` returned NULL for every row
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**Files**: `sparkless/core/condition_evaluator.py`,
+`sparkless/dataframe/evaluation/expression_evaluator.py`,
+`sparkless/core/datetime_utils.py` (new)
+
+Both functions are exported from the public API and marked supported in
+`PYSPARK_FUNCTION_MATRIX.md`, but neither had an evaluator implementation. Each
+built a `ColumnOperation` (`"last_day"`, `"trunc"`) that matched no dispatch
+branch in either evaluator, so both answered NULL — for any input type,
+including a correctly-typed `DateType` column:
+
+```python
+df.select(F.last_day(F.col("d")))        # sparkless None;  PySpark 2026-01-31
+df.select(F.trunc(F.col("d"), "month"))  # sparkless None;  PySpark 2026-01-01
+df.select(F.date_add(F.col("d"), 6))     # control: works
+```
+
+**Reference behaviour** (PySpark 4.0.0 / OpenJDK 21): both are DATE-valued even
+for a TIMESTAMP operand. `trunc` accepts `year`/`yyyy`/`yy`, `month`/`mon`/`mm`,
+`week` and `quarter`, case-insensitively; `week` truncates to **Monday**; an
+unrecognised unit yields NULL rather than raising.
+
+**Fix**: `spark_last_day()` / `spark_trunc()` in the new
+`sparkless/core/datetime_utils.py`, registered in **both** evaluators so the
+predicate path and the `withColumn` path cannot drift.
+
+**Regression tests**: `tests/parity/functions/test_date_trunc_last_day_parity.py`
+(passing under both engines).
+
+### BUG-053: date predicates collapsed to NULL, silently emptying filters
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-21
+**Files**: `sparkless/core/condition_evaluator.py`, `sparkless/core/datetime_utils.py`
+
+Found while fixing BUG-052: correct `last_day` values still produced an empty
+frame, because the *comparison* was broken in two independent ways.
+
+1. **The cast was dropped on the predicate path.** `_evaluate_column_operation`'s
+   legacy string-type-name cast chain handled `long`/`int`/`double`/`string`/
+   `boolean` and fell to `else: return value` for everything else — so
+   `F.lit("2026-01-01").cast("date")` stayed a **`str`** when resolved as a
+   comparison operand, while the projection path produced a real `date`.
+2. **No temporal coercion in the comparison kernel.** `_coerce_for_comparison`
+   reconciled string/numeric pairs only. `date >= str` therefore raised
+   `TypeError`, which `_evaluate_comparison` converts to NULL by design.
+
+Net effect, with no error anywhere:
+
+```python
+df.filter(F.last_day(F.col("d")) >= F.lit("2026-01-01").cast("date"))
+# sparkless 0 rows;  PySpark 1 row
+```
+
+This is the worst failure shape for a mock: on a real cluster the code is
+correct, on sparkless it quietly returns an empty result.
+
+**Reference behaviour**: Spark implicitly casts across the temporal boundary —
+`date_col >= '2026-01-01'` compares two DATEs, and a DATE beside a TIMESTAMP is
+promoted to midnight.
+
+**Fix**: `date`/`timestamp` now delegate to the same `TypeConverter` the
+`DataType` branch already used, and `coerce_temporal_pair()` reconciles
+temporal/string and date/datetime pairs before comparison.
+
+**Regression tests**: `tests/parity/functions/test_date_trunc_last_day_parity.py`
+(`TestDatePredicateParity`, `TestDateFilterKeepsRows`).
+
 ### BUG-046: Predicates and logical connectives returned their operand instead of a boolean
 **Status**: Fixed
 **Severity**: Critical

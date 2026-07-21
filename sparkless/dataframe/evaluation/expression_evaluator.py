@@ -2130,6 +2130,8 @@ class ExpressionEvaluator:
             "date_diff": self._func_datediff,  # Alias for datediff
             "date_format": self._func_date_format,
             "date_trunc": self._func_date_trunc,
+            "last_day": self._func_last_day,
+            "trunc": self._func_trunc,
             "months_between": self._func_months_between,
             # Array functions
             "array_join": self._func_array_join,
@@ -4004,6 +4006,29 @@ class ExpressionEvaluator:
             ):
                 return dt.isoformat()  # type: ignore[unreachable]
             return dt.strftime("%Y-%m-%d")
+
+    def _func_last_day(self, value: Any, operation: ColumnOperation) -> Any:
+        """Last day of ``value``'s month, as Spark's ``last_day`` (BUG-052).
+
+        Unregistered, this fell through to ``_evaluate_function_call``'s
+        terminal fallthrough and answered NULL for every row -- silently, so a
+        downstream ``>=`` comparison dropped the whole frame. Shares
+        ``core.datetime_utils`` with the filter path so the two cannot drift.
+        """
+        from ...core.datetime_utils import spark_last_day
+
+        return spark_last_day(value)
+
+    def _func_trunc(self, value: Any, operation: ColumnOperation) -> Any:
+        """Truncate a date down to year/month/week/quarter (BUG-052).
+
+        Distinct from ``date_trunc``: ``trunc`` takes ``(date, format)``, is
+        DATE-valued, and supports ``week``/``quarter``. Like Spark, an
+        unrecognised unit yields NULL rather than raising.
+        """
+        from ...core.datetime_utils import spark_trunc
+
+        return spark_trunc(value, operation.value)
 
     def _func_date_trunc(self, value: Any, operation: ColumnOperation) -> Any:
         """Truncate date/timestamp to specified unit."""

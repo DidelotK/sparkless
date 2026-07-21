@@ -21,6 +21,34 @@ class ConditionalEvaluator:
         """
         self._base_evaluator = base_evaluator
 
+    def _resolve_branch_value(self, row: Dict[str, Any], value: Any) -> Any:
+        """Resolve one THEN/ELSE branch of a CASE WHEN to a concrete value.
+
+        A branch may itself be an expression. ``CaseWhen`` is checked first
+        because a nested ``F.when(...)`` is neither a ``Column`` nor a
+        ``ColumnOperation``, so it used to fall through to ``return value`` and
+        hand the caller the *unevaluated* ``CaseWhen`` object. Downstream that
+        object was treated as data: ``F.sum`` folded it into its accumulator as
+        ``acc + CaseWhen``, yielding a ``ColumnOperation`` instead of a number
+        (BUG-051).
+
+        Args:
+            row: Row data dictionary.
+            value: The branch value to resolve.
+
+        Returns:
+            The evaluated branch value.
+        """
+        if isinstance(value, CaseWhen):
+            # Nested CASE WHEN - recurse via the base evaluator.
+            return self._base_evaluator.evaluate_expression(row, value)
+        if hasattr(value, "value") and hasattr(value, "name"):
+            # It's a Literal - evaluate it
+            return self._base_evaluator._evaluate_value(row, value)
+        if isinstance(value, (Column, ColumnOperation)):
+            return self._base_evaluator.evaluate_expression(row, value)
+        return value
+
     def evaluate_case_when(self, row: Dict[str, Any], case_when: CaseWhen) -> Any:
         """Evaluate when/otherwise expressions.
 
@@ -35,29 +63,10 @@ class ConditionalEvaluator:
         for condition, value in case_when.conditions:
             condition_result = self._base_evaluator.evaluate_expression(row, condition)
             if condition_result:
-                # Return the value (evaluate if it's an expression)
-                # Check for Literal, Column, or ColumnOperation
-                if hasattr(value, "value") and hasattr(value, "name"):
-                    # It's a Literal - evaluate it
-                    return self._base_evaluator._evaluate_value(row, value)
-                elif isinstance(value, (Column, ColumnOperation)):
-                    return self._base_evaluator.evaluate_expression(row, value)
-                return value
+                return self._resolve_branch_value(row, value)
 
         # No condition matched, return default value
         if case_when.default_value is not None:
-            # Check for Literal, Column, or ColumnOperation
-            if hasattr(case_when.default_value, "value") and hasattr(
-                case_when.default_value, "name"
-            ):
-                # It's a Literal - evaluate it
-                return self._base_evaluator._evaluate_value(
-                    row, case_when.default_value
-                )
-            elif isinstance(case_when.default_value, (Column, ColumnOperation)):
-                return self._base_evaluator.evaluate_expression(
-                    row, case_when.default_value
-                )
-            return case_when.default_value
+            return self._resolve_branch_value(row, case_when.default_value)
 
         return None
