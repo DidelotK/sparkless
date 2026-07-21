@@ -19,6 +19,7 @@ from sparkless.spark_types import (
     StringType,
     DataType,
     Row,
+    copy_schema,
 )
 from sparkless.dataframe import DataFrame
 from sparkless.session.config import SparkConfig
@@ -455,7 +456,19 @@ class DataFrameFactory:
             # fields can be empty list, but that's valid for empty schemas
             # If schema was provided explicitly, trust it even if fields is empty
 
-        return DataFrame(data, schema, storage)  # type: ignore[arg-type]
+        # BUG-035: bind a *copy* of the schema, never the caller's object graph.
+        # PySpark round-trips the schema through the JVM, so the DataFrame owns
+        # fresh StructField/DataType objects; sparkless kept the caller's, which
+        # let an in-place mutation of a bound schema leak back into the caller
+        # (and, via the `StructType([*OTHER.fields, ...])` idiom, into every
+        # other schema sharing those field objects).
+        # BUG-035: bind a *copy* of the schema, never the caller's object graph.
+        # PySpark round-trips the schema through the JVM, so the DataFrame owns
+        # fresh StructField/DataType objects; sparkless kept the caller's, which
+        # let an in-place mutation of a bound schema leak back into the caller
+        # (and, via the `StructType([*OTHER.fields, ...])` idiom, into every
+        # other schema sharing those field objects).
+        return DataFrame(data, copy_schema(schema), storage)  # type: ignore[arg-type]
 
     def _handle_schema_inference(
         self, data: List[Dict[str, Any]], schema: Optional[Any]
