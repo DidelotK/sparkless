@@ -14,7 +14,7 @@ This file tracks bugs and issues discovered during test refactoring and developm
 
 ## Critical Issues
 
-### BUG-035: `createDataFrame` bound the caller's schema object graph by reference
+### BUG-043: `createDataFrame` bound the caller's schema object graph by reference
 **Status**: Fixed
 **Severity**: Critical
 **Discovered**: 2026-07-21
