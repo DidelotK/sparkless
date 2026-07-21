@@ -3,32 +3,45 @@
 # Build and publish the sparkless wheel + sdist to the Azure Artifacts PyPI feed,
 # then tag the commit and create the GitHub release.
 #
-# This is the `publish` command handed to changesets/action. The action only runs
-# it when there are no pending changesets on `main` -- i.e. immediately after a
-# "Version Packages" PR is merged, when `pyproject.toml` already carries the new
-# version.
+# This is the `publish` command handed to changesets/action. The action runs it
+# when there are no pending changesets on `main` -- i.e. after a "Version
+# Packages" PR is merged, when `pyproject.toml` already carries the new version.
 #
-# DESIGN NOTE -- why this script is paranoid.
+# DESIGN NOTE -- every failure is fatal.
 #
-# The setup this replaced could report success while publishing nothing:
-#   1. it decided whether to publish by grepping semantic-release's prose output,
-#      and a miss meant "skip the publish job", not "fail";
-#   2. `twine upload ... || echo "Warning: upload failed"` swallowed every upload
-#      error.
-# So: every command here is fatal (`set -euo pipefail`), the publish decision is
-# made from a git tag rather than from parsed prose, and after uploading we ask
-# the feed whether the version is actually there. If any of that does not hold,
-# this script exits non-zero and the workflow goes red.
+# The setup this replaces reported success while publishing nothing, twice over:
+#
+#   `twine upload ... || echo "Warning: upload of $f failed"` treated every
+#   upload error -- auth, network, rejected metadata -- as benign.
+#
+#   The publish/skip decision was made by grepping semantic-release's console
+#   prose, and a miss *skipped* the publish job rather than failing it.
+#
+# So there is no `|| true` here and no output parsing. The one thing this script
+# does not do is guess: after uploading it asks the feed whether the version is
+# actually served (scripts/release/feed.py), and only tags once the feed says
+# yes. A tag therefore always means "this version is installable".
+#
+# KNOWN LIMITATION -- re-uploading an existing version fails.
+#
+# There is deliberately no `twine --skip-existing`: twine 6.x gates that flag
+# behind a hard URL allowlist of PyPI and TestPyPI
+# (twine/settings.py::verify_feature_capability), so against this Azure feed it
+# raises UnsupportedConfiguration *before uploading anything*. That is how the
+# 4.2.3 publish failed. Consequently a re-run that tries to upload a version
+# already on the feed will fail loudly. That is the correct default -- versions
+# are immutable -- and the recovery is to cut a new version rather than to
+# re-push an old one. See docs/release-process.md.
 
 set -euo pipefail
 
 AZURE_DEVOPS_ORG="${AZURE_DEVOPS_ORG:-solya-azure-devops}"
 AZURE_DEVOPS_PROJECT="${AZURE_DEVOPS_PROJECT:-sparkless}"
 AZURE_DEVOPS_FEED="${AZURE_DEVOPS_FEED:-sparkless}"
+export AZURE_DEVOPS_ORG AZURE_DEVOPS_PROJECT AZURE_DEVOPS_FEED
 
 FEED_BASE="https://pkgs.dev.azure.com/${AZURE_DEVOPS_ORG}/${AZURE_DEVOPS_PROJECT}/_packaging/${AZURE_DEVOPS_FEED}/pypi"
 UPLOAD_URL="${FEED_BASE}/upload/"
-SIMPLE_URL="${FEED_BASE}/simple/sparkless/"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
@@ -42,7 +55,7 @@ group() { echo "::group::$*"; }
 endgroup() { echo "::endgroup::"; }
 
 # ---------------------------------------------------------------------------
-# 1. Work out what we are releasing, and whether it is already released.
+# 1. What are we releasing, and has it shipped already?
 # ---------------------------------------------------------------------------
 
 VERSION="$(python3 scripts/release/check_version_consistency.py --print)" \
@@ -51,9 +64,9 @@ TAG="v${VERSION}"
 
 echo "Release candidate: ${TAG}"
 
-# Ask the remote directly rather than `git fetch --tags` + `rev-parse`: a fetch
-# can fail for reasons unrelated to this release (a local tag that would be
-# clobbered, for instance), and the remote is the authority on what has shipped.
+# The tag is pushed only after the feed has confirmed it serves the wheel, so
+# its presence means the publish genuinely succeeded. Asking the remote (rather
+# than fetching tags locally) keeps this independent of local tag state.
 remote_tag="$(git ls-remote --tags origin "refs/tags/${TAG}")" \
   || die "could not query tags on origin; cannot tell whether ${TAG} was already released"
 
@@ -70,7 +83,7 @@ fi
 [ -n "${AZURE_DEVOPS_PAT:-}" ] \
   || die "AZURE_DEVOPS_PAT is unset or empty. Add it as a repository secret (Azure DevOps PAT with Packaging read & write). Refusing to attempt an unauthenticated publish."
 [ -n "${GITHUB_TOKEN:-}" ] \
-  || die "GITHUB_TOKEN is unset; cannot create the GitHub release."
+  || die "GITHUB_TOKEN is unset; cannot tag or create the GitHub release."
 
 # ---------------------------------------------------------------------------
 # 3. Install, test, build.
@@ -78,7 +91,10 @@ fi
 
 group "Install build and publish tooling"
 python3 -m pip install --upgrade pip
-python3 -m pip install -e ".[dev]" build twine
+# Pinned deliberately: an unpinned twine is what broke the 4.2.3 publish. twine
+# 6.1 introduced the --skip-existing repository allowlist and CI picked it up
+# silently on the next run.
+python3 -m pip install -e ".[dev]" "build>=1,<2" "twine>=6.2,<7"
 endgroup
 
 group "Run tests before publishing"
@@ -94,27 +110,18 @@ endgroup
 # Assert the built artifacts carry the version we think we are releasing. A
 # stale build directory or an out-of-sync pyproject would otherwise ship the
 # wrong version under the right tag.
-if ! ls "dist/sparkless-${VERSION}-"*.whl >/dev/null 2>&1; then
-  echo "dist/ contains:" >&2
-  ls -la dist >&2
-  die "no wheel matching version ${VERSION} was built"
-fi
-if ! ls "dist/sparkless-${VERSION}.tar.gz" >/dev/null 2>&1; then
-  die "no sdist matching version ${VERSION} was built"
-fi
+compgen -G "dist/sparkless-${VERSION}-*.whl" > /dev/null \
+  || { ls -la dist >&2; die "no wheel matching version ${VERSION} was built"; }
+[ -f "dist/sparkless-${VERSION}.tar.gz" ] \
+  || die "no sdist matching version ${VERSION} was built"
 
 # ---------------------------------------------------------------------------
-# 4. Upload. No `|| true`, no warnings-as-success.
+# 4. Upload. No `|| true`, no --skip-existing (see the note at the top).
 # ---------------------------------------------------------------------------
 
 group "Upload to Azure Artifacts feed '${AZURE_DEVOPS_FEED}'"
-# --skip-existing makes a re-run after a partial failure idempotent: it tolerates
-# ONLY "this file is already on the feed". Every other failure (auth, network,
-# rejected metadata) still exits non-zero. Step 5 then independently confirms the
-# version is really there, so "skipped" can never be mistaken for "published".
 python3 -m twine upload \
   --non-interactive \
-  --skip-existing \
   --repository-url "${UPLOAD_URL}" \
   --username "_" \
   --password "${AZURE_DEVOPS_PAT}" \
@@ -127,40 +134,27 @@ endgroup
 # ---------------------------------------------------------------------------
 
 group "Verify ${VERSION} is served by the feed"
-verified=0
-for attempt in 1 2 3 4 5 6; do
-  index="$(curl --silent --show-error --fail --location \
-    --user "_:${AZURE_DEVOPS_PAT}" "${SIMPLE_URL}" || true)"
-  if printf '%s' "${index}" | grep -q "sparkless-${VERSION}-.*\.whl"; then
-    echo "Feed serves sparkless ${VERSION} (attempt ${attempt})."
-    verified=1
-    break
-  fi
-  echo "Not visible yet (attempt ${attempt}/6); the feed is eventually consistent. Waiting 10s..."
-  sleep 10
-done
-[ "${verified}" -eq 1 ] \
-  || die "uploaded sparkless ${VERSION} but the feed never served it. The publish did NOT succeed -- do not trust this run. Check ${SIMPLE_URL}"
+python3 scripts/release/feed.py has --version "${VERSION}" --wait \
+  || die "uploaded sparkless ${VERSION} but the feed never served it. The publish did NOT succeed -- do not trust this run. Check ${FEED_BASE}/simple/sparkless/"
 endgroup
 
 # ---------------------------------------------------------------------------
-# 6. Tag and release. Done last so a tag always implies a verified publish.
+# 6. Tag and release, last, so a tag always implies a verified publish.
+#    `gh release create` creates the tag as well, so this is a single operation
+#    rather than a `git push` of a tag followed by a separate API call -- one
+#    thing to go wrong instead of two, and no half-state where a tag exists
+#    without a release.
 # ---------------------------------------------------------------------------
 
 group "Tag ${TAG} and create the GitHub release"
-git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git tag -a "${TAG}" -m "${TAG}"
-git push origin "refs/tags/${TAG}"
-
 notes="$(python3 scripts/release/extract_changelog.py "${VERSION}")" \
   || die "could not extract the CHANGELOG section for ${VERSION}"
-
 notes_file="$(mktemp)"
 trap 'rm -f "${notes_file}"' EXIT
 printf '%s\n' "${notes}" > "${notes_file}"
 
 gh release create "${TAG}" \
+  --target "$(git rev-parse HEAD)" \
   --title "${TAG}" \
   --notes-file "${notes_file}" \
   dist/*

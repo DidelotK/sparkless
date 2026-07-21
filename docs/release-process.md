@@ -4,6 +4,33 @@ Sparkless uses [Changesets](https://github.com/changesets/changesets) for
 versioning and changelogs — the same tooling as the other Solya repositories —
 and a Python-specific publish step that uploads the wheel to Azure Artifacts.
 
+## Read this first: the version numbers
+
+The name `sparkless` is shared by three different things, and their numbers do
+not line up:
+
+| Where | Latest | What it is |
+|---|---|---|
+| public PyPI `sparkless` | 4.13.2 | The **upstream** Rust/Polars package (`robin-sparkless` engine) — a different project |
+| Azure Artifacts feed `sparkless` | 5.9.0 | A **mix** of Solya's pure-Python builds and upstream releases cached through the feed's PyPI passthrough |
+| this repository | 6.0.0 | The Solya fork |
+
+Consequences worth knowing before you touch a release:
+
+- **6.0.0 is a deliberate jump, not a breaking change.** The fork's 4.2.x line
+  sat below a public package of the same name already at 4.13.x, so no 4.2.x or
+  5.x release could be unambiguous. 6.0.0 is above everything on both sides.
+  It signals *nothing* about API compatibility — see the note under `## 6.0.0`
+  in [`CHANGELOG.md`](../CHANGELOG.md).
+- **The feed mixes both packages.** Its upstream passthrough caches public PyPI
+  releases into the same index, so `sparkless 4.2.0` on the feed carries ten
+  files: nine upstream Rust platform wheels plus one `py3-none-any` wheel built
+  here. Consumers must **pin the version**; an unpinned `sparkless` can resolve
+  to the upstream project instead of this one.
+- **4.2.3 was never published.** It was versioned and changelogged, but its
+  publish run failed before uploading anything. There is no 4.2.3 artifact and
+  no `v4.2.3` tag.
+
 ## The two-step flow
 
 ```text
@@ -76,9 +103,56 @@ welcome for readability, but they have no effect on the release.
 ### If a publish fails
 
 Fix the cause, then re-run the Release workflow via **workflow_dispatch** on
-`main`. The publish is idempotent: it exits early if the tag already exists, and
-`twine --skip-existing` tolerates files already on the feed while still failing
-on every other error.
+`main`:
+
+```bash
+gh workflow run release.yml --repo Solya-app/sparkless --ref main
+gh run watch "$(gh run list --repo Solya-app/sparkless --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+No new Version PR is needed. Once a Version PR has merged, `main` already
+carries the bumped version with the changesets consumed, so `changesets/action`
+finds nothing to version and goes straight to publishing.
+
+**A re-run is safe only if the previous run did not upload anything.** The
+publish is not resumable past the upload step — see below.
+
+### Known limitation: a version cannot be re-uploaded
+
+Azure Artifacts feeds are immutable: once `sparkless-X.Y.Z-*.whl` is on the
+feed, uploading it again fails. Normally `twine --skip-existing` would smooth
+that over. **It cannot be used here:** twine 6.x gates that flag behind a hard
+URL allowlist of PyPI and TestPyPI
+(`twine/settings.py::verify_feature_capability`), so against any Azure feed it
+raises `UnsupportedConfiguration` *before uploading anything*:
+
+```
+ERROR UnsupportedConfiguration: The configured repository
+'https://pkgs.dev.azure.com/.../pypi/upload/' does not have support for
+the following features: --skip-existing and is an unsupported configuration
+```
+
+That is exactly how the first 4.2.3 publish failed. The flag has been removed
+and must not be reintroduced.
+
+The consequence, stated plainly:
+
+| Where the run failed | Re-run works? |
+|---|---|
+| Before the upload (tests, build, missing secret) | **Yes** — nothing shipped; fix and re-run |
+| During or after the upload | **No** — the upload will be rejected as a duplicate |
+
+If a run got as far as uploading, **cut a new patch version** rather than trying
+to republish the old one. Add a changeset, merge the Version PR, and note in it
+that the previous version was never published so nobody hunts for it on the feed
+(4.2.3 → 4.2.4 is the worked example). Versions are cheap; mutating a published
+one is not possible.
+
+> Deciding what to do about partial uploads more gracefully — reconciling `dist/`
+> against the feed's index before uploading, so a re-run pushes only what is
+> missing — is left as future work. It is doable (`scripts/release/feed.py`
+> already reads the index) but it is real complexity for a rare situation, and
+> "cut a new version" is the safer default.
 
 ## How this fails loudly
 
@@ -127,9 +201,14 @@ nothing. Two mechanisms did that, and both are gone:
 Two further silent failures were removed along the way:
 
 - `twine upload ... || echo "Warning: upload failed"` swallowed every upload
-  error. The upload is now fatal, and after it succeeds the script polls the feed
-  and fails if the version is not actually served. A green run means the package
-  is installable.
+  error. The upload is now fatal, and after it succeeds the script asks the feed
+  whether the version is actually served (`scripts/release/feed.py`) and fails if
+  it is not. A green run means the package is installable.
+
+  This is not hypothetical: the `--skip-existing` failure above is precisely the
+  kind of error the old `|| echo "Warning"` would have swallowed. Instead of a
+  green run that shipped nothing, it produced a red run and a two-minute
+  diagnosis.
 - A release with no changelog entry used to pass unnoticed — `v4.2.2` shipped
   exactly that way, bumping both version files while writing nothing to
   `CHANGELOG.md`. `extract_changelog.py` now refuses to release a version whose
@@ -145,6 +224,7 @@ Two further silent failures were removed along the way:
 | `scripts/release/sync_version.py` | package.json version → pyproject + `_version.py` |
 | `scripts/release/check_version_consistency.py` | Asserts the three agree (runs in CI) |
 | `scripts/release/publish.sh` | Test, build, upload, verify, tag, release |
+| `scripts/release/feed.py` | Reads the feed's simple index — "is this version really published?" |
 | `scripts/release/extract_changelog.py` | Release notes from `CHANGELOG.md` |
 | `scripts/release/assert_release_state.py` | Post-run guard against silent no-ops |
 | `.github/workflows/release.yml` | Wires it together |
