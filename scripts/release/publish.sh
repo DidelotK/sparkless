@@ -150,6 +150,7 @@ group "Tag ${TAG} and create the GitHub release"
 notes="$(python3 scripts/release/extract_changelog.py "${VERSION}")" \
   || die "could not extract the CHANGELOG section for ${VERSION}"
 notes_file="$(mktemp)"
+trap 'rm -f "${notes_file}"' EXIT
 printf '%s\n' "${notes}" > "${notes_file}"
 
 gh release create "${TAG}" \
@@ -157,7 +158,6 @@ gh release create "${TAG}" \
   --title "${TAG}" \
   --notes-file "${notes_file}" \
   dist/*
-rm -f "${notes_file}"
 endgroup
 
 echo "Published sparkless ${VERSION} to the ${AZURE_DEVOPS_FEED} feed and released ${TAG}."
