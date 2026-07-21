@@ -216,6 +216,15 @@ class Literal(IColumn):
         """Check if literal value is not null (PySpark compatibility)."""
         return self.isnotnull()
 
+    def isNaN(self) -> "ColumnOperation":
+        """Check if literal value is NaN (PySpark compatibility).
+
+        NULL is not NaN: ``isNaN`` is FALSE for a NULL operand, never NULL.
+        """
+        from .column import ColumnOperation
+
+        return ColumnOperation(self, "isnan", None)
+
     def eqNullSafe(self, other: Any) -> "ColumnOperation":
         """Null-safe equality comparison (PySpark eqNullSafe).
 

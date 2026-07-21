@@ -44,6 +44,41 @@ from ...spark_types import (
 )
 from ...core.ddl_adapter import parse_ddl_schema
 
+#: Operations that this evaluator resolves through
+#: :meth:`ExpressionEvaluator._evaluate_predicate_operation` rather than through
+#: the function registry. Every one of them yields a SQL BOOLEAN (or NULL), and
+#: none has a registry entry, so any that is not listed here falls through to
+#: ``_evaluate_function_call`` and silently returns its own operand.
+#:
+#: The comparison operators (``==``, ``<``, ...) are boolean too but are
+#: dispatched one branch earlier, to ``_evaluate_comparison_operation``.
+#: ``like`` / ``rlike`` / ``contains`` / ``startswith`` / ``endswith`` /
+#: ``between`` are boolean too but *do* have registry entries that already
+#: return booleans, so they are deliberately left on that path.
+_PREDICATE_OPERATIONS: frozenset = frozenset(
+    {
+        # Logical connectives (three-valued)
+        "and",
+        "&",
+        "or",
+        "|",
+        "not",
+        "!",
+        "~",
+        # Null predicates
+        "isNull",
+        "isnull",
+        "isNotNull",
+        "isnotnull",
+        "isnan",
+        "isNaN",
+        # Null-safe equality
+        "eqNullSafe",
+        # Membership
+        "isin",
+    }
+)
+
 
 def _coerce_for_comparison(left: Any, right: Any) -> tuple[Any, Any]:
     """Coerce temporal types for comparison, matching PySpark's auto-cast behavior.
@@ -320,6 +355,15 @@ class ExpressionEvaluator:
         elif op in ["==", "!=", "<", ">", "<=", ">="]:
             return self._evaluate_comparison_operation(row, operation)
 
+        # Handle the logical connectives and the null / membership predicates.
+        # These MUST be dispatched before the function-registry lookup and the
+        # generic fallback below: none of them has a registry entry, so without
+        # this branch they reach ``_evaluate_function_call``, whose terminal
+        # ``return value`` hands back the *operand* instead of a boolean
+        # (BUG-046).
+        elif op in _PREDICATE_OPERATIONS:
+            return self._evaluate_predicate_operation(row, operation, row_index)
+
         # Handle cast operations explicitly (Issue #5 fix)
         elif op == "cast":
             # Evaluate the column/value being cast
@@ -362,6 +406,115 @@ class ExpressionEvaluator:
             except Exception:
                 # If function call fails, try arithmetic operation as fallback
                 return self._evaluate_arithmetic_operation(row, operation)
+
+    def _evaluate_boolean_operand(
+        self,
+        row: Dict[str, Any],
+        expression: Any,
+        row_index: Optional[int] = None,
+    ) -> Optional[bool]:
+        """Evaluate a sub-expression to SQL BOOLEAN or NULL.
+
+        Args:
+            row: The data row to evaluate against.
+            expression: The sub-expression (a predicate, comparison or literal).
+            row_index: Optional row position, forwarded to the evaluator.
+
+        Returns:
+            ``True`` / ``False``, or ``None`` for SQL NULL.
+        """
+        value = self.evaluate_expression(row, expression, row_index=row_index)
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        return bool(value)
+
+    def _evaluate_predicate_operation(
+        self,
+        row: Dict[str, Any],
+        operation: Any,
+        row_index: Optional[int] = None,
+    ) -> Optional[bool]:
+        """Evaluate a logical connective or a null / membership predicate.
+
+        All of these yield SQL BOOLEAN, and all of them follow three-valued
+        logic. Reference behaviour captured from PySpark 4.0.0 / OpenJDK 21.
+
+        Args:
+            row: The data row to evaluate against.
+            operation: The ``ColumnOperation`` to evaluate.
+            row_index: Optional row position, forwarded to the evaluator.
+
+        Returns:
+            ``True`` / ``False``, or ``None`` for SQL NULL.
+        """
+        from ...core.condition_evaluator import ConditionEvaluator
+
+        op = operation.operation
+
+        # --- Logical connectives (Kleene three-valued logic) ---------------
+        if op in ("and", "&"):
+            return ConditionEvaluator._kleene_and(
+                self._evaluate_boolean_operand(row, operation.column, row_index),
+                self._evaluate_boolean_operand(row, operation.value, row_index),
+            )
+        if op in ("or", "|"):
+            return ConditionEvaluator._kleene_or(
+                self._evaluate_boolean_operand(row, operation.column, row_index),
+                self._evaluate_boolean_operand(row, operation.value, row_index),
+            )
+        if op in ("not", "!", "~"):
+            return ConditionEvaluator._kleene_not(
+                self._evaluate_boolean_operand(row, operation.column, row_index)
+            )
+
+        # --- Predicates over a single operand -----------------------------
+        value = self.evaluate_expression(row, operation.column, row_index=row_index)
+
+        if op in ("isNull", "isnull"):
+            return value is None
+        if op in ("isNotNull", "isnotnull"):
+            return value is not None
+        if op in ("isnan", "isNaN"):
+            # NULL is not NaN in Spark: isnan(NULL) is FALSE, never NULL.
+            return isinstance(value, float) and math.isnan(value)
+
+        if op == "eqNullSafe":
+            # `<=>` never returns NULL: NULL <=> NULL is TRUE, and
+            # NULL <=> <non-null> is FALSE.
+            other = self.evaluate_expression(row, operation.value, row_index=row_index)
+            if value is None or other is None:
+                return value is None and other is None
+            return bool(ConditionEvaluator._evaluate_comparison(value, "==", other))
+
+        if op == "isin":
+            values = operation.value
+            if values is None:
+                return None
+            if not isinstance(values, (list, tuple)):
+                values = [values]
+            resolved = [
+                self.evaluate_expression(row, item, row_index=row_index)
+                if isinstance(item, (Column, ColumnOperation))
+                else self._get_literal_value(item)
+                if hasattr(item, "value") and hasattr(item, "name")
+                else item
+                for item in values
+            ]
+            # SQL IN semantics: NULL on the left is NULL; a match is TRUE; no
+            # match with a NULL in the list is NULL; otherwise FALSE.
+            if value is None:
+                return None
+            if ConditionEvaluator._evaluate_isin_operation(value, list(resolved)):
+                return True
+            if any(item is None for item in resolved):
+                return None
+            return False
+
+        # Unreachable while `_PREDICATE_OPERATIONS` and this dispatch agree;
+        # NULL rather than the operand is the safe answer if they drift.
+        return None
 
     def _evaluate_arithmetic_operation(
         self, row: Dict[str, Any], operation: Any
@@ -984,6 +1137,17 @@ class ExpressionEvaluator:
             except Exception:
                 # Fallback to direct evaluation if function registry fails
                 pass
+
+        # Identity fallback for an unimplemented function. For a BOOLEAN-typed
+        # operation this is actively harmful: returning the operand makes
+        # `isNotNull()` evaluate to the column's own value, which is truthy for
+        # every non-null row, so an enclosing `when` / `&` / `filter` silently
+        # matches everything (BUG-046). NULL is the honest answer for an
+        # operation we cannot evaluate.
+        from ...core.type_utils import BOOLEAN_RESULT_OPERATIONS
+
+        if func_name in BOOLEAN_RESULT_OPERATIONS or func_name in _PREDICATE_OPERATIONS:
+            return None
 
         return value
 

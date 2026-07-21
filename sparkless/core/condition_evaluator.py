@@ -27,6 +27,35 @@ def _round_scale(operation: Any) -> int:
 logger = logging.getLogger(__name__)
 
 
+#: Operations whose *value* is exactly the boolean that the predicate path
+#: (:meth:`ConditionEvaluator._evaluate_column_operation`) computes for them.
+#: Projecting one of these must give the same answer as filtering on it, so the
+#: value path delegates rather than keeping a second, drifting implementation.
+#:
+#: The logical connectives are deliberately absent: ``_evaluate_logical_operation``
+#: already owns them on the value path.
+_VALUE_IS_PREDICATE_OPERATIONS: frozenset = frozenset(
+    {
+        "isNull",
+        "isnull",
+        "isNotNull",
+        "isnotnull",
+        "isnan",
+        "isNaN",
+        "eqNullSafe",
+        "isin",
+        "between",
+        "like",
+        "rlike",
+        "contains",
+        "startswith",
+        "startsWith",
+        "endswith",
+        "endsWith",
+    }
+)
+
+
 class ConditionEvaluator:
     """Shared condition evaluation logic."""
 
@@ -168,6 +197,15 @@ class ConditionEvaluator:
             The evaluated result value.
         """
         operation_type = operation.operation
+
+        # Predicates whose *value* is the boolean the predicate path already
+        # computes. Dispatched first so that projecting a predicate
+        # (``df.select(col.isin(...))``) agrees with filtering on it
+        # (``df.filter(col.isin(...))``) -- the two used to be evaluated by
+        # different tables, and `isin` / `between` / `eqNullSafe` were missing
+        # from this one, so projecting them yielded NULL (BUG-046).
+        if operation_type in _VALUE_IS_PREDICATE_OPERATIONS:
+            return ConditionEvaluator._evaluate_column_operation(row, operation)
 
         # Arithmetic operations
         if operation_type in ["+", "-", "*", "/", "%"]:
@@ -1677,6 +1715,26 @@ class ConditionEvaluator:
             return col_value is not None
         elif operation_type in ["isNull", "isnull"]:
             return col_value is None
+        elif operation_type in ["isnan", "isNaN"]:
+            # isnan(NULL) is FALSE in Spark, never NULL.
+            import math
+
+            return isinstance(col_value, float) and math.isnan(col_value)
+
+        # Null-safe equality (`<=>`). Never NULL: NULL <=> NULL is TRUE and
+        # NULL <=> <non-null> is FALSE. `_evaluate_comparison` cannot express
+        # that -- it collapses any NULL operand to `operation == "!="`.
+        if operation_type == "eqNullSafe":
+            other = operation.value
+            if isinstance(other, (ColumnOperation, Column)):
+                other = ConditionEvaluator._get_column_value(row, other)
+            elif hasattr(other, "value") and not isinstance(
+                other, (Column, ColumnOperation)
+            ):
+                other = other.value  # Unwrap Literal
+            if col_value is None or other is None:
+                return col_value is None and other is None
+            return ConditionEvaluator._evaluate_comparison(col_value, "==", other)
 
         # Comparison operations
         if operation_type in ["==", "!=", ">", ">=", "<", "<="]:
@@ -1697,10 +1755,12 @@ class ConditionEvaluator:
                 right_val = right_val.value  # Unwrap Literal
             return ConditionEvaluator._evaluate_comparison(col_value, op_str, right_val)
 
-        # String operations
+        # String operations. A NULL operand makes the whole predicate NULL, not
+        # FALSE -- the two are indistinguishable to `filter` but not to a
+        # projection or to an enclosing NOT.
         if operation_type == "like":
-            if operation.value is None:
-                return False
+            if col_value is None or operation.value is None:
+                return None
             return ConditionEvaluator._evaluate_like_operation(
                 col_value, operation.value
             )
@@ -1717,20 +1777,41 @@ class ConditionEvaluator:
                 return None
             return str(operation.value) in str(col_value)
         elif operation_type == "rlike":
-            if col_value is None:
-                return False
+            if col_value is None or operation.value is None:
+                return None
             import re
 
             return bool(re.search(str(operation.value), str(col_value)))
         elif operation_type == "isin":
             if operation.value is None:
-                return False
-            return ConditionEvaluator._evaluate_isin_operation(
-                col_value, operation.value
+                return None
+            values = (
+                list(operation.value)
+                if isinstance(operation.value, (list, tuple))
+                else [operation.value]
             )
+            resolved = [
+                ConditionEvaluator._get_column_value(row, item)
+                if isinstance(item, (Column, ColumnOperation))
+                else item.value
+                if hasattr(item, "value")
+                and hasattr(item, "name")
+                and not isinstance(item, (Column, ColumnOperation))
+                else item
+                for item in values
+            ]
+            # SQL IN: NULL on the left is NULL; a match is TRUE; no match with
+            # a NULL in the list is NULL; otherwise FALSE.
+            if col_value is None:
+                return None
+            if ConditionEvaluator._evaluate_isin_operation(col_value, resolved):
+                return True
+            if any(item is None for item in resolved):
+                return None
+            return False
         elif operation_type == "between":
-            if operation.value is None:
-                return False
+            if col_value is None or operation.value is None:
+                return None
             return ConditionEvaluator._evaluate_between_operation(
                 col_value, operation.value
             )
