@@ -24,6 +24,7 @@ from ..spark_types import (
     get_row_value,
     resolve_order_key,
     _make_hashable,
+    _ORDER_DIRECTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -3038,19 +3039,55 @@ class LazyEvaluationEngine:
                         # via the shared resolver, so NULL placement matches the
                         # window-ordering helpers (Spark: ASC NULLS FIRST /
                         # DESC NULLS LAST).
+                        # A sort key may be a *computed expression*
+                        # (``orderBy(F.when(...) * F.lit(2))``) rather than a
+                        # stored column. resolve_order_key only yields a name,
+                        # and no such column exists in the row, so the lookup
+                        # returned None for every row, every comparison tied,
+                        # and the frame came back in input order -- silently
+                        # unsorted (BUG-055). Resolve each key to a getter:
+                        # a row lookup when the name is a real column, else a
+                        # per-row evaluation of the underlying expression.
+                        sort_field_names = {f.name for f in current.schema.fields}
+
+                        def _make_getter(col: Any, col_name: str) -> Any:
+                            if col_name in sort_field_names or isinstance(col, str):
+                                return lambda row: get_row_value(row, col_name)
+                            expr = col
+                            # Strip the asc/desc/nulls_* wrapper to reach the
+                            # expression that actually needs evaluating.
+                            while (
+                                getattr(expr, "operation", None) in _ORDER_DIRECTIONS
+                                and getattr(expr, "column", None) is not None
+                            ):
+                                expr = expr.column
+                            if not hasattr(expr, "evaluate") and not hasattr(
+                                expr, "operation"
+                            ):
+                                return lambda row: get_row_value(row, col_name)
+                            from ..core.condition_evaluator import ConditionEvaluator
+
+                            return lambda row: ConditionEvaluator.evaluate_expression(
+                                row, expr
+                            )
+
                         sort_specs = []
                         for col in columns_to_sort:
                             key_name, key_desc, key_nulls_last = resolve_order_key(
                                 col, default_ascending
                             )
                             sort_specs.append(
-                                (key_name, not key_desc, not key_nulls_last)
+                                (
+                                    _make_getter(col, key_name),
+                                    not key_desc,
+                                    not key_nulls_last,
+                                )
                             )
 
                         def _compare_rows(a: Any, b: Any) -> int:
-                            for col_name, ascending, nulls_first in sort_specs:
-                                va = get_row_value(a, col_name)
-                                vb = get_row_value(b, col_name)
+                            for getter, ascending, nulls_first in sort_specs:
+                                va = getter(a)
+                                vb = getter(b)
                                 a_null = va is None
                                 b_null = vb is None
                                 if a_null and b_null:
