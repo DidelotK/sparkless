@@ -137,9 +137,38 @@ class CaseWhen:
         if condition is not None and value is not None:
             self.conditions.append((condition, value))
 
-        # Generate a meaningful name from the condition and value
-        # This will be updated later when otherwise() is called
+        # Generate a meaningful name from the condition and value.
+        # Refreshed by every when()/otherwise() that extends the expression.
         self.name = "CASE WHEN"
+        self._refresh_name()
+
+    def _refresh_name(self) -> None:
+        """Rebuild ``self.name`` as the SQL text Spark would generate.
+
+        Spark names an unaliased CASE column after its SQL:
+        ``CASE WHEN (c1) THEN v1 WHEN (c2) THEN v2 ELSE d END`` (the ``ELSE``
+        clause is omitted when there is no ``otherwise``).
+
+        Each branch is rendered with ``get_expression_name`` rather than
+        interpolated directly. Bare f-string interpolation fell back to
+        ``object.__repr__`` for any operand without a ``__str__`` -- a
+        ``Literal`` came out as ``<...Literal object at 0x7f3c...>``, so the
+        generated column name embedded a **memory address** and changed on
+        every run (BUG-056). Only the first WHEN was rendered, too, so a
+        multi-branch CASE was named after a single branch.
+        """
+        if not self.conditions:
+            self.name = "CASE WHEN"
+            return
+        parts = []
+        for condition, then_value in self.conditions:
+            parts.append(
+                f"WHEN ({get_expression_name(condition)}) "
+                f"THEN {get_expression_name(then_value)}"
+            )
+        if self.default_value is not None:
+            parts.append(f"ELSE {get_expression_name(self.default_value)}")
+        self.name = "CASE " + " ".join(parts) + " END"
 
     @property
     def else_value(self) -> Any:
@@ -162,6 +191,7 @@ class CaseWhen:
             Self for method chaining.
         """
         self.conditions.append((condition, value))
+        self._refresh_name()
         return self
 
     def otherwise(self, value: Any) -> "CaseWhen":
@@ -174,17 +204,7 @@ class CaseWhen:
             Self for method chaining.
         """
         self.default_value = value
-
-        # Generate full SQL expression for the name
-        # Format: CASE WHEN (condition) THEN value ELSE otherwise END
-        if self.conditions:
-            condition, then_value = self.conditions[0]
-            condition_str = (
-                str(condition) if hasattr(condition, "__str__") else str(condition)
-            )
-            name = f"CASE WHEN ({condition_str}) THEN {then_value} ELSE {value} END"
-            self.name = name
-
+        self._refresh_name()
         return self
 
     def alias(self, name: str) -> "CaseWhen":

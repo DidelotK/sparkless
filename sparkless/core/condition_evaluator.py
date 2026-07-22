@@ -2479,6 +2479,17 @@ class ConditionEvaluator:
         if isinstance(column, ColumnOperation):
             # Recursively evaluate the operation
             return ConditionEvaluator._evaluate_column_operation_value(row, column)
+        # CaseWhen (F.when(...).otherwise(...)) is neither a Column nor a
+        # ColumnOperation and exposes no ``.value``, so it used to reach the
+        # ``return column`` fallback below and hand back the *unevaluated*
+        # object. As an arithmetic operand that object then absorbed the
+        # operator -- ``CaseWhen * 2.0`` dispatches to ``CaseWhen.__mul__``,
+        # which builds a new ColumnOperation instead of multiplying -- so a
+        # projected ``F.when(...) * F.lit(2.0)`` yielded a ColumnOperation
+        # *as the cell value* rather than a number (BUG-054). Detected with
+        # the same duck-type used by ``evaluate_condition`` above.
+        elif hasattr(column, "evaluate") and hasattr(column, "conditions"):
+            return column.evaluate(row)
         elif isinstance(column, Column):
             val = get_row_value(row, column.name)
             # Resolve dot-notation alias references (e.g. "r.id" -> "r_id")

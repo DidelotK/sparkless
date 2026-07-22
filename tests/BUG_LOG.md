@@ -16,6 +16,122 @@ This file tracks bugs and issues discovered during test refactoring and developm
 
 ## Critical Issues
 
+### BUG-054: a CASE WHEN used as an arithmetic operand returned the unevaluated object
+**Status**: Fixed
+**Severity**: Critical
+**Discovered**: 2026-07-22
+**File**: `sparkless/core/condition_evaluator.py`
+
+Same family as BUG-051, one level up. BUG-051 fixed a `CaseWhen` sitting *in a
+branch*; this is a `CaseWhen` sitting *in an operand*.
+
+`ConditionEvaluator._get_column_value` dispatches on `ColumnOperation`,
+`Column`, `str`, then `.value`, and ends in `return column`. A `CaseWhen` is
+none of those and has no `.value`, so it took the fallthrough and the caller
+received the object itself. Arithmetic then did the rest of the damage:
+`CaseWhen * 2.0` dispatches to `CaseWhen.__mul__`, which *builds a new
+ColumnOperation* rather than multiplying.
+
+```python
+case = F.when(F.col("v") > F.lit(1.0), F.col("v")).otherwise(F.lit(0.0))
+
+df.select(case * F.lit(2.0))              # sparkless <ColumnOperation object>
+                                          # PySpark   20.0
+df.select(F.abs(case * F.lit(2.0)))       # sparkless None      PySpark 20.0
+df.select(F.greatest(case * F.lit(2.0),
+                     F.lit(-1.0)))        # sparkless -1.0      PySpark 20.0
+```
+
+The wrapped forms are the dangerous ones. A raw object in a cell is obviously
+wrong; `None` and `-1.0` are values a test asserts against without noticing.
+
+**Two traps this bug sets for its own regression test**, both hit while
+writing one:
+
+1. `ColumnOperation.__eq__` returns *another ColumnOperation*, which is
+   truthy. So `assert collected == [20.0, 0.0]` **passes** while `collected`
+   holds leaked objects. The test helper must reject non-scalars by type
+   before comparing — nine assertions in
+   `test_case_when_as_operand.py` passed against the unfixed library until it
+   did.
+2. `df.agg(F.sum(case * lit))` was already correct on `main` (BUG-051 covered
+   the aggregate path), so an aggregate-only test proves nothing here. The
+   defect lives in `select` / `withColumn` / `filter` / `orderBy`.
+
+**Fix**: detect `CaseWhen` by the same duck-type `evaluate_condition` already
+uses (`hasattr(evaluate) and hasattr(conditions)`) and evaluate it.
+
+**Regression tests**: `tests/unit/functions/test_case_when_as_operand.py`
+(`TestCaseWhenAsArithmeticOperand`), passing under both engines.
+
+### BUG-055: `orderBy` on a computed expression silently returned input order
+**Status**: Fixed
+**Severity**: High
+**File**: `sparkless/dataframe/lazy.py`
+
+`DataFrame.orderBy` resolved each key through `resolve_order_key`, which
+yields a column *name*, then read that name out of each row. For a computed
+key there is no such column, so `get_row_value` returned `None` for every row,
+every comparison tied, and `sorted` — being stable — handed back the input
+order.
+
+```python
+scaled = F.when(F.col("v") > F.lit(1.0), F.col("v")).otherwise(F.lit(0.0)) * F.lit(2.0)
+df.orderBy(scaled.asc(), F.col("id").asc())   # sparkless input order
+                                              # PySpark   sorted
+```
+
+Silent, and worse than a NULL: the frame looks plausible and only the row
+order is wrong. Note `Window.orderBy` over the same expression was already
+correct — the two sorts are separate code, which is why this survived the
+per-key-direction fix in PR #16.
+
+**Fix**: resolve each key to a *getter* rather than a name — a row lookup when
+the name is a real column of the frame, otherwise a per-row evaluation of the
+underlying expression with the `asc`/`desc`/`nulls_*` wrapper stripped. Named
+keys keep the original lookup, so NULL placement is untouched.
+
+**Regression tests**: `tests/unit/functions/test_case_when_as_operand.py`
+(`TestCaseWhenAsSortKey`), including a guard that plain named sort keys and
+their NULL ordering still behave.
+
+### BUG-056: a generated CASE WHEN column name embedded a memory address
+**Status**: Fixed
+**Severity**: Medium
+**File**: `sparkless/functions/conditional.py`
+
+`CaseWhen.otherwise` built the column name by f-string-interpolating its
+operands directly. Any operand without a `__str__` fell back to
+`object.__repr__`:
+
+```python
+df.select(F.when(F.col("v") > F.lit(1.0), F.col("v")).otherwise(F.lit(0.0))).columns
+# sparkless ['CASE WHEN ((v > <sparkless...Literal object at 0x7f3c...>)) THEN v
+#            ELSE <sparkless...Literal object at 0x7f3c...> END']
+# PySpark   ['CASE WHEN (v > 1.0) THEN v ELSE 0.0 END']
+```
+
+The address makes `df.columns` **non-deterministic across runs**, so any
+assertion on an unaliased CASE column is unreproducible. Only
+`self.conditions[0]` was rendered, so a multi-branch CASE was named after one
+branch, and `when(...)` without `otherwise(...)` was left as the placeholder
+`"CASE WHEN"`.
+
+**Fix**: a `_refresh_name()` that renders every branch through
+`get_expression_name` — the helper the rest of the library already uses — and
+is re-run by both `when()` and `otherwise()`. Output now matches PySpark's SQL
+text for single-branch, multi-branch, no-`otherwise`, and nested CASE.
+
+**Regression tests**: `tests/unit/functions/test_case_when_as_operand.py`
+(`TestCaseWhenGeneratedName`), including a determinism assertion that builds
+the same expression twice.
+
+### Open, not fixed here: `groupBy` on a computed expression raises
+`df.groupBy(case * F.lit(2.0))` raises `SparkColumnNotFoundError` where
+PySpark groups by the computed value. Left alone deliberately: it fails
+*loudly*, which is the acceptable failure mode, and the grouping path needs
+its own projection pass rather than the operand fix above.
+
 ### BUG-051: A nested CASE WHEN was never evaluated
 **Status**: Fixed
 **Severity**: Critical
