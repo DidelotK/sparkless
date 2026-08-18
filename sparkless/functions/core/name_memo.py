@@ -15,15 +15,27 @@ that walk into an exponential one:
   reference, multiplying again at every shared node.
 
 Measured on the ``gold.decision_context`` projected-stock-out-date expression
-(24 levels, two shared operands): a five-row ``collect()`` made **17 469 222**
+(24 levels, two shared operands): a five-row ``collect()`` made **18 962 252**
 calls into the name helper and took **12.9 s**. The same expression one level
 lower took **0.083 s**.
 
-Name derivation is pure: it reads ``column`` / ``operation`` / ``value`` /
-``_name`` / ``_alias_name`` and returns a string, mutating nothing. So a node
-reached twice in one walk must produce the same answer both times, and
-memoising the answer for the duration of a single outermost derivation collapses
-the walk to one visit per node with no change to any result.
+This rests on an **assumption**, so it is worth stating as one: name derivation
+is *pure*. Every branch reachable from here reads ``column`` / ``operation`` /
+``value`` / ``_name`` / ``_alias_name`` and returns a string, mutating nothing.
+If that holds, a node reached twice in one walk must produce the same answer
+both times, and memoising the answer for the duration of a single outermost
+derivation collapses the walk to one visit per node with no change to any result.
+
+It holds for every type this library puts in an operand slot -- ``Column``,
+``ColumnOperation``, ``Literal``, ``CaseWhen``, ``AggregateFunction``,
+``WindowFunction``, ``MockLambdaExpression`` are all read-only with respect to
+the tree -- and an audit that recomputed every derivation the test suite
+performs against an unmemoised reference found 0 mismatches and observed 0
+mutations during a walk. What is *not* enforced is the operand slot's type:
+``ColumnOperation.__init__`` accepts ``value: Any`` and the helper calls
+``str(value)`` on it, so a caller-supplied object whose ``__str__`` rewrote the
+tree could observe a stale name within the walk it corrupted. No such type
+exists in this library; a foreign one would be violating this contract.
 
 The memo is deliberately **not** kept between derivations. Expression nodes do
 get mutated after construction -- ``LazyDataFrame`` normalises column references
@@ -84,15 +96,26 @@ def memoise_within_pass(kind: str) -> Callable[[_Derivation], _Derivation]:
             if hit is not None:
                 return hit[1]
 
-            state.depth += 1
             try:
+                # Inside the `try`, not before it: an asynchronous exception
+                # (SIGINT, `interrupt_main`, `PyThreadState_SetAsyncExc`)
+                # landing between the increment and the `try` would skip the
+                # `finally` and strand `depth` above zero for the rest of the
+                # thread's life -- which silently turns this into a permanent
+                # global cache that never invalidates, and pins every node it
+                # ever saw. Incrementing inside means the worst case is an
+                # unmatched *decrement*, which the clamp below absorbs.
+                state.depth += 1
                 result = func(self)
             finally:
                 state.depth -= 1
                 # Back at the top: the walk is over, so every entry becomes
                 # potentially stale and is dropped. This also runs when `func`
-                # raised, which is why it lives in `finally`.
-                if state.depth == 0:
+                # raised, which is why it lives in `finally`. `<= 0` rather than
+                # `== 0` so a counter that ever slipped negative re-synchronises
+                # instead of never clearing again.
+                if state.depth <= 0:
+                    state.depth = 0
                     state.cache.clear()
 
             # Only worth remembering while an enclosing walk can still ask for
