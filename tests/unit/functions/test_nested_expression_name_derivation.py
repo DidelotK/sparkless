@@ -204,24 +204,45 @@ class TestTheMemoDoesNotOutliveItsPass:
         assert name_memo._STATE.cache == {}
         assert name_memo._STATE.depth == 0
 
-    def test_concurrent_derivations_do_not_share_a_cache(self) -> None:
-        """Two threads naming two different trees must not read each other's."""
+    def test_each_thread_gets_its_own_cache_and_depth_counter(self) -> None:
+        """Concurrent derivations must not share the memo's bookkeeping.
+
+        Comparing results alone would not test this -- distinct nodes give
+        distinct answers out of a shared cache too. What a shared cache would
+        actually break is the *depth* counter: one thread's increments would
+        hold ``depth`` above zero while another thread's outermost derivation
+        returns, so that thread's entries would never be dropped and would go on
+        answering for a tree that has since been mutated. So this asserts on the
+        bookkeeping itself -- one cache object per thread, and every thread's
+        state drained afterwards.
+        """
+        from sparkless.functions.core import name_memo
+
+        cache_ids = {}
+        depths = {}
         names = {}
-        barrier = threading.Barrier(2)
+        barrier = threading.Barrier(4)
 
         def derive(tag):
             node = F.col(tag).cast("double") * F.lit(2.0)
             barrier.wait()
-            names[tag] = node.name
+            for _ in range(200):
+                names[tag] = node.name
+            cache_ids[tag] = id(name_memo._STATE.cache)
+            depths[tag] = name_memo._STATE.depth
+            assert not name_memo._STATE.cache
 
-        threads = [
-            threading.Thread(target=derive, args=(t,)) for t in ("left", "right")
-        ]
+        tags = ("north", "south", "east", "west")
+        threads = [threading.Thread(target=derive, args=(t,)) for t in tags]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
-        assert "left" in names["left"]
-        assert "right" in names["right"]
-        assert names["left"] != names["right"]
+        assert len(cache_ids) == len(tags), "a worker thread died"
+        assert len(set(cache_ids.values())) == len(tags), (
+            f"threads shared a cache object: {cache_ids}"
+        )
+        assert set(depths.values()) == {0}, f"depth counter leaked: {depths}"
+        assert all(tag in names[tag] for tag in tags)
+        assert len(set(names.values())) == len(tags)
