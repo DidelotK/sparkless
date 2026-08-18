@@ -26,16 +26,33 @@ If that holds, a node reached twice in one walk must produce the same answer
 both times, and memoising the answer for the duration of a single outermost
 derivation collapses the walk to one visit per node with no change to any result.
 
-It holds for every type this library puts in an operand slot -- ``Column``,
-``ColumnOperation``, ``Literal``, ``CaseWhen``, ``AggregateFunction``,
-``WindowFunction``, ``MockLambdaExpression`` are all read-only with respect to
-the tree -- and an audit that recomputed every derivation the test suite
-performs against an unmemoised reference found 0 mismatches and observed 0
-mutations during a walk. What is *not* enforced is the operand slot's type:
-``ColumnOperation.__init__`` accepts ``value: Any`` and the helper calls
-``str(value)`` on it, so a caller-supplied object whose ``__str__`` rewrote the
-tree could observe a stale name within the walk it corrupted. No such type
-exists in this library; a foreign one would be violating this contract.
+The strongest evidence for it is not about types but about *reach*: a pass is a
+closed world. Profiling the whole test suite with ``sys.setprofile`` toggled at
+every outermost entry and exit, exactly three sparkless modules ever execute
+inside a pass --
+
+===========================  ==========
+module                       calls
+===========================  ==========
+``functions/core/column.py``    112 048
+``functions/core/literals.py``      978
+``spark_types.py``                   92
+===========================  ==========
+
+-- and every one of them is read-only with respect to the tree. Nothing from
+``session/``, nothing from ``dataframe/``. In particular the two places that
+*do* rebind operands after construction, ``LazyDataFrame``'s column
+normalisation and ``GroupedData``'s aggregate substitution, are not among them,
+so they cannot run while a name is being derived. An audit that recomputed
+every derivation the suite performs against an unmemoised reference agrees:
+0 mismatches, 0 mutations observed.
+
+What is *not* enforced is the operand slot's type. ``ColumnOperation.__init__``
+accepts ``value: Any`` and the helper calls ``str(value)`` on it, so a
+caller-supplied object whose ``__str__`` rewrote the tree would widen that
+closed world and could observe a stale name within the walk it corrupted. No
+such type exists in this library; a foreign one would be violating this
+contract.
 
 The memo is deliberately **not** kept between derivations. Expression nodes do
 get mutated after construction -- ``LazyDataFrame`` normalises column references
@@ -97,14 +114,24 @@ def memoise_within_pass(kind: str) -> Callable[[_Derivation], _Derivation]:
                 return hit[1]
 
             try:
-                # Inside the `try`, not before it: an asynchronous exception
-                # (SIGINT, `interrupt_main`, `PyThreadState_SetAsyncExc`)
-                # landing between the increment and the `try` would skip the
-                # `finally` and strand `depth` above zero for the rest of the
-                # thread's life -- which silently turns this into a permanent
-                # global cache that never invalidates, and pins every node it
-                # ever saw. Incrementing inside means the worst case is an
-                # unmatched *decrement*, which the clamp below absorbs.
+                # Inside the `try`, not before it. A stranded-HIGH counter is
+                # the harmful direction: it silently turns this into a
+                # permanent global cache that never invalidates and pins every
+                # node it ever saw, and the clamp below cannot recover it.
+                # Putting the increment before the `try` leaves a window where
+                # it has already run but the handler is not yet installed --
+                # reachable by a `RecursionError` raised from the attribute
+                # access itself, which is realistic in a library that walks
+                # deep trees. Inside, that same failure strands the counter
+                # LOW, which the clamp absorbs.
+                #
+                # This narrows the exposure; it does not close it. An
+                # asynchronous exception delivered at the first line of the
+                # `finally`, before the decrement runs, still strands the
+                # counter high -- measured with `sys.settrace`: depth 1
+                # afterwards, the next derivation serves a stale name. That
+                # residual window is irreducible in pure Python, because the
+                # `finally` cannot itself be made atomic.
                 state.depth += 1
                 result = func(self)
             finally:
@@ -112,8 +139,9 @@ def memoise_within_pass(kind: str) -> Callable[[_Derivation], _Derivation]:
                 # Back at the top: the walk is over, so every entry becomes
                 # potentially stale and is dropped. This also runs when `func`
                 # raised, which is why it lives in `finally`. `<= 0` rather than
-                # `== 0` so a counter that ever slipped negative re-synchronises
-                # instead of never clearing again.
+                # `== 0` so a counter that slipped negative re-synchronises
+                # instead of never clearing again. It cannot rescue a counter
+                # stranded high -- see the note above.
                 if state.depth <= 0:
                     state.depth = 0
                     state.cache.clear()

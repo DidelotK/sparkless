@@ -269,7 +269,10 @@ class TestTheMemoDoesNotOutliveItsPass:
 
         assert depth_seen, "the exploding operand was never reached"
         mid_depth, mid_entries = depth_seen[-1]
-        assert mid_depth > 0, "the walk was not in flight when it raised"
+        assert mid_depth > 0, (
+            "the walk was not in flight when it raised -- if the "
+            "`_generate_name` memo was removed, this is that, not a drain bug"
+        )
         assert mid_entries > 0, (
             "nothing was cached before the failure, so draining is untested"
         )
@@ -285,13 +288,16 @@ class TestTheMemoDoesNotOutliveItsPass:
         permanent process-wide cache that never invalidates and pins every node
         it ever saw -- silent and unbounded.
 
-        The wrapper increments *inside* its ``try`` precisely so that the only
-        drift an asynchronous exception (SIGINT, ``interrupt_main``,
-        ``PyThreadState_SetAsyncExc``) can cause is an unmatched *decrement*,
-        never an unmatched increment: a stranded-high counter would be
-        unrecoverable, whereas a low one is absorbed here. That ordering is not
-        directly testable -- the window is a few bytecodes wide -- but its
-        consequence is, so this pins the recovery.
+        Drift in the two directions is not symmetric. A counter stranded
+        *high* is unrecoverable -- the clamp cannot help, and the memo silently
+        becomes permanent -- whereas a *low* one is absorbed here. The wrapper
+        increments inside its ``try`` to narrow the high-side exposure, but it
+        does not remove it: an asynchronous exception delivered at the first
+        line of the ``finally``, before the decrement, still strands the counter
+        high. Measured with ``sys.settrace``: depth 1 afterwards, and the next
+        derivation serves a stale name. That window is irreducible in pure
+        Python and is deliberately not asserted here; what this test pins is the
+        recovery that *is* achievable, on the low side.
 
         FALSIFIED BY (measured): restoring ``if state.depth == 0`` in place of
         the ``<= 0`` clamp leaves the memo poisoned and this fails.
@@ -334,10 +340,21 @@ class TestTheMemoDoesNotOutliveItsPass:
         Every observation is carried back to the main thread and asserted there.
         An ``assert`` inside the worker would be reported as a
         ``PytestUnhandledThreadExceptionWarning`` and the test would still pass.
+
+        The caches are compared as **objects, not ``id()`` ints**. An int pins
+        nothing: a finished worker's thread-local is torn down, its dict is
+        freed, and a later worker's dict can be allocated at the same address --
+        so an ``id()``-based comparison reports the very bug this test exists to
+        catch, on a perfectly correct memo. That is not hypothetical. It is
+        latent today only because ``ColumnOperation.name`` is memoised, which
+        makes each thread touch ``_STATE`` while building its node, before the
+        barrier; measured over 300 rounds, removing that one decoration takes
+        this test from 0/300 false reports to 300/300. Holding the dicts alive
+        until the comparison removes the accident.
         """
         from sparkless.functions.core import name_memo
 
-        cache_ids = {}
+        caches = {}
         depths = {}
         residues = {}
         names = {}
@@ -348,7 +365,7 @@ class TestTheMemoDoesNotOutliveItsPass:
             barrier.wait()
             for _ in range(200):
                 names[tag] = node.name
-            cache_ids[tag] = id(name_memo._STATE.cache)
+            caches[tag] = name_memo._STATE.cache  # the object, so it stays alive
             depths[tag] = name_memo._STATE.depth
             residues[tag] = len(name_memo._STATE.cache)
 
@@ -359,9 +376,9 @@ class TestTheMemoDoesNotOutliveItsPass:
         for thread in threads:
             thread.join()
 
-        assert len(cache_ids) == len(tags), "a worker thread died"
-        assert len(set(cache_ids.values())) == len(tags), (
-            f"threads shared a cache object: {cache_ids}"
+        assert len(caches) == len(tags), "a worker thread died"
+        assert len({id(cache) for cache in caches.values()}) == len(tags), (
+            "threads shared a cache object"
         )
         assert set(depths.values()) == {0}, f"depth counter leaked: {depths}"
         assert set(residues.values()) == {0}, (
