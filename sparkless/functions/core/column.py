@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from ...core.interfaces.functions import IColumn
 from ...spark_types import DataType, StringType
+from .name_memo import memoise_within_pass
 
 if TYPE_CHECKING:
     from ...window import WindowSpec
@@ -914,8 +915,15 @@ class ColumnOperation(Column):
         )
 
     @property
+    @memoise_within_pass("name")
     def name(self) -> str:
-        """Get column name."""
+        """Get column name.
+
+        Memoised for the duration of one outermost derivation: this reads both
+        ``_generate_name()`` and ``str(self)`` below, each of which re-walks the
+        whole operand subtree, so without the memo the cost doubles per level of
+        nesting. See :mod:`sparkless.functions.core.name_memo`.
+        """
         # If there's an alias, use it
         if hasattr(self, "_alias_name") and self._alias_name:
             return self._alias_name
@@ -974,8 +982,13 @@ class ColumnOperation(Column):
         """Set column name."""
         self._name = value
 
+    @memoise_within_pass("str")
     def __str__(self) -> str:
-        """Generate SQL representation of this operation."""
+        """Generate SQL representation of this operation.
+
+        Memoised per derivation pass -- it recurses into the operands the same
+        way ``name`` does. See :mod:`sparkless.functions.core.name_memo`.
+        """
         # For datetime functions, generate proper SQL
         if self.operation in ["hour", "minute", "second"]:
             return f"extract({self.operation} from TRY_CAST({self.column.name} AS TIMESTAMP))"
@@ -1026,12 +1039,16 @@ class ColumnOperation(Column):
             # For other operations, use the generated name
             return self._generate_name()
 
+    @memoise_within_pass("_generate_name")
     def _generate_name(self) -> str:
         """Generate a name for this operation.
 
         This method delegates to _generate_name_early() which contains
         the actual implementation. This allows the same logic to be used
         both before and after super().__init__() is called.
+
+        Memoised per derivation pass; ``name`` and ``__str__`` both reach it for
+        the same node. See :mod:`sparkless.functions.core.name_memo`.
         """
         return self._generate_name_early()
 
