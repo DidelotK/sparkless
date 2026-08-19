@@ -2662,13 +2662,22 @@ class ExpressionEvaluator:
         return projected
 
     def _func_to_json(self, value: Any, operation: ColumnOperation) -> Optional[str]:
-        """Serialize struct or map values to JSON strings."""
+        """Serialize struct, map or array values to JSON strings.
+
+        Delegates to the canonical renderer so this path and the ``select``
+        path agree. ``json.dumps`` cannot express what Spark writes: a NULL
+        struct field is omitted while a NULL array element or map value is
+        kept, and a Decimal keeps its scale unquoted.
+        """
+        from ...core.json_values import to_json_value
+
         if value is None:
             return None
         struct_dict = self._struct_to_dict(value)
-        if struct_dict is None:
-            return None
-        return json.dumps(struct_dict, ensure_ascii=False, separators=(",", ":"))
+        return to_json_value(
+            value if struct_dict is None else struct_dict,
+            getattr(operation, "column", None),
+        )
 
     def _func_from_csv(self, value: Any, operation: ColumnOperation) -> Any:
         """Parse CSV strings based on optional provided schema."""
