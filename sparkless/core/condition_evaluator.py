@@ -452,6 +452,15 @@ class ConditionEvaluator:
             "array_union",
             "array_except",
             "array_intersect",
+            # Array value functions. Absent from this whitelist, each of them
+            # fell to the NULL fall-through below while the withColumn path
+            # answered (flatten) or returned its own operand (array_min,
+            # array_max, slice) -- two evaluators, two different wrong answers
+            # for one expression (#2420).
+            "flatten",
+            "array_min",
+            "array_max",
+            "slice",
         ]:
             return ConditionEvaluator._evaluate_function_operation_value(row, operation)
 
@@ -798,36 +807,28 @@ class ConditionEvaluator:
             except (ValueError, AttributeError):
                 return None
         elif operation_type == "array_distinct":
-            # Remove duplicate elements from an array, preserving insertion order
-            if not isinstance(col_value, list):
-                return None
-            seen = set()
-            result = []
-            for item in col_value:
-                # For hashable types, use the item directly
-                # For unhashable types (like lists), convert to tuple or use repr
-                try:
-                    # Try to use item as-is if it's hashable
-                    item_key: Any
-                    if isinstance(item, (int, float, str, bool, type(None))):
-                        item_key = item
-                    elif isinstance(item, list):
-                        # Convert list to tuple for hashing
-                        item_key = tuple(item)
-                    else:
-                        # Try to hash directly
-                        item_key = item
+            from .array_values import array_distinct_value
 
-                    if item_key not in seen:
-                        seen.add(item_key)
-                        result.append(item)
-                except TypeError:
-                    # Unhashable type - use string representation as fallback
-                    item_str = repr(item)
-                    if item_str not in seen:
-                        seen.add(item_str)
-                        result.append(item)
-            return result
+            return array_distinct_value(col_value)
+        elif operation_type == "flatten":
+            from .array_values import flatten_value
+
+            return flatten_value(col_value)
+        elif operation_type == "array_min":
+            from .array_values import array_min_value
+
+            return array_min_value(col_value)
+        elif operation_type == "array_max":
+            from .array_values import array_max_value
+
+            return array_max_value(col_value)
+        elif operation_type == "slice":
+            from .array_values import slice_value
+
+            params = operation.value
+            if not isinstance(params, tuple) or len(params) < 2:  # noqa: PLR2004
+                return None
+            return slice_value(col_value, int(params[0]), int(params[1]))
         elif operation_type == "array_sort" or operation_type == "sort_array":
             # Sort array elements - operation.value contains asc boolean
             if not isinstance(col_value, list):
