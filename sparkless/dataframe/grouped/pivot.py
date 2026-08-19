@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple, Union
 
 from ...functions import Column, ColumnOperation, AggregateFunction
 from ...spark_types import get_row_value
+from ...core.aggregate_values import aggregate_target_values, distinct_count
 from ..protocols import SupportsDataFrameOps
 
 if TYPE_CHECKING:
@@ -543,25 +544,19 @@ class PivotGroupedData:
             result_key = alias_name if alias_name else f"avg({col_name})"
             return result_key, statistics.mean(values) if values else None
         elif func_name == "approx_count_distinct":
-            values = [
-                get_row_value(row, col_name)
-                for row in group_rows
-                if get_row_value(row, col_name) is not None
-            ]
-            distinct_count = len(set(values))
             result_key = (
                 alias_name if alias_name else f"approx_count_distinct({col_name})"
             )
-            return result_key, distinct_count
+            return result_key, distinct_count(
+                aggregate_target_values(self.df, expr, col_name, group_rows)
+            )
         elif func_name == "countDistinct":
-            values = [
-                get_row_value(row, col_name)
-                for row in group_rows
-                if get_row_value(row, col_name) is not None
-            ]
-            distinct_count = len(set(values))
+            # See the note on GroupedData: an expression target read by name
+            # missed on every row and the count came back 0.
             result_key = alias_name if alias_name else f"count({col_name})"
-            return result_key, distinct_count
+            return result_key, distinct_count(
+                aggregate_target_values(self.df, expr, col_name, group_rows)
+            )
         elif func_name == "stddev_pop":
             values = [
                 get_row_value(row, col_name)

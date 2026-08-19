@@ -24,6 +24,7 @@ from ...core.type_utils import (
 
 from ...spark_types import get_row_value
 from ...core.protocols import is_row_evaluatable_expression
+from ...core.aggregate_values import aggregate_target_values, distinct_count
 from ..protocols import SupportsDataFrameOps
 
 if TYPE_CHECKING:
@@ -1278,28 +1279,27 @@ class GroupedData:
             return result_key, statistics.mean(values) if values else None
         elif func_name == "approx_count_distinct":
             # approx_count_distinct(col) - approximate distinct count
-            values = [
-                get_row_value(row, col_name)
-                for row in group_rows
-                if get_row_value(row, col_name) is not None
-            ]
-            distinct_count = len(set(values))
             result_key = (
                 alias_name if alias_name else f"approx_count_distinct({col_name})"
             )
-            return result_key, distinct_count
+            return result_key, distinct_count(
+                aggregate_target_values(self.df, expr, col_name, group_rows)
+            )
         elif func_name == "countDistinct":
-            # countDistinct(col) - exact distinct count
-            values = [
-                get_row_value(row, col_name)
-                for row in group_rows
-                if get_row_value(row, col_name) is not None
-            ]
-            distinct_count = len(set(values))
+            # countDistinct(col) - exact distinct count.
+            #
+            # Reading the target by name works only when the target *is* a
+            # column. F.countDistinct(F.struct(...)) / (F.upper(c)) / (F.when(...))
+            # name an expression, the lookup missed on every row, and the
+            # count came back 0 -- a legitimate answer for this function, so
+            # nothing distinguished "no distinct values" from "not computed"
+            # (#2417).
             result_key = (
                 alias_name  # Use the name from expr.name (already set correctly)
             )
-            return result_key, distinct_count
+            return result_key, distinct_count(
+                aggregate_target_values(self.df, expr, col_name, group_rows)
+            )
         elif func_name == "stddev_pop":
             # stddev_pop(col) - population standard deviation
             values = [
