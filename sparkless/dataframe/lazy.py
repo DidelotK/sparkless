@@ -2042,34 +2042,23 @@ class LazyEvaluationEngine:
 
                             # Handle transform operations specially
                             if col.operation == "transform":
-                                # For transform, we need to evaluate the lambda on the array
-                                from ..functions.core.lambda_parser import LambdaParser
-
-                                # Get the column being transformed
+                                # Naming and typing only: a transform yields an
+                                # array whatever its lambda does.
+                                #
+                                # This branch used to build a LambdaParser here
+                                # and discard the result -- nothing read it.
+                                # The parse needed the lambda's *source*, was
+                                # handed the MockLambdaExpression wrapper
+                                # rather than the callable, and raised
+                                # LambdaTranslationError, which the surrounding
+                                # `except (ValueError, SyntaxError,
+                                # AttributeError)` did not catch. So schema
+                                # inference crashed every F.transform before
+                                # any row was evaluated (#2419).
                                 transform_col = col.column
                                 if isinstance(transform_col, Column):
                                     col_name = transform_col.name
 
-                                # Get the lambda function
-                                lambda_func = col.value
-
-                                # Parse the lambda function
-                                try:
-                                    parser = LambdaParser(lambda_func)
-                                    parser_any = cast("Any", parser)
-                                    # Lambda parsing for transform operations
-                                    lambda_expr = (
-                                        parser_any.parse()
-                                        if hasattr(parser_any, "parse")
-                                        else None
-                                    )
-                                except (ValueError, SyntaxError, AttributeError) as e:
-                                    logger.debug(
-                                        "Failed to parse lambda for transform: %s", e
-                                    )
-                                    lambda_expr = None
-
-                                # Create a field for the transformed result
                                 col_type = SchemaInferenceEngine._infer_type(
                                     []
                                 )  # Array type
