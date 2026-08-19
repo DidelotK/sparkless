@@ -136,6 +136,62 @@ class TestStructInSelect:
         assert _field_names(row["scores"]) == ["urgency", "col2"]
         assert _fields(row["scores"])["col2"] == 0.0
 
+    def test_aliased_literal_keeps_its_alias(self, scores_df) -> None:
+        """An alias on a *literal* argument names the field, exactly as on a column.
+
+        ``Literal.alias`` used to rewrite only the literal's display name and
+        leave ``_alias_name`` unset, so ``field_name_for`` saw an unaliased
+        literal and fell through to the positional ``col<N>``. The asymmetry
+        was the tell: ``F.col("x").alias("n")`` kept its name here while
+        ``F.lit(v).alias("n")`` silently did not (#2417).
+        """
+        F = get_spark_imports().F
+
+        row = scores_df.select(
+            F.struct(
+                F.lit("axis").alias("axis_type"),
+                F.col("key").alias("value_id"),
+            ).alias("s")
+        ).collect()[0]
+
+        assert _field_names(row["s"]) == ["axis_type", "value_id"]
+        assert _fields(row["s"]) == {"axis_type": "axis", "value_id": "k1"}
+
+    def test_aliased_literal_is_named_in_the_schema_too(self, scores_df) -> None:
+        """The declared schema must carry the alias, not just the collected value.
+
+        A consumer that reads the field by name off ``df.schema`` is the one
+        that breaks in production; asserting only the row value would let a
+        schema that still says ``col1`` pass.
+        """
+        F = get_spark_imports().F
+
+        schema = scores_df.select(
+            F.struct(
+                F.lit("axis").alias("axis_type"),
+                F.col("key").alias("value_id"),
+            ).alias("s")
+        ).schema
+
+        assert [f.name for f in _field_type(schema, "s").fields] == [
+            "axis_type",
+            "value_id",
+        ]
+
+    def test_aliased_and_unaliased_literals_mix(self, scores_df) -> None:
+        """Aliasing one literal must not renumber the positional name of another."""
+        F = get_spark_imports().F
+
+        row = scores_df.select(
+            F.struct(
+                F.lit("axis").alias("axis_type"),
+                F.lit(0.0),
+                F.col("key").alias("value_id"),
+            ).alias("s")
+        ).collect()[0]
+
+        assert _field_names(row["s"]) == ["axis_type", "col2", "value_id"]
+
     def test_expression_argument_is_evaluated(self, scores_df) -> None:
         """A computed argument contributes its computed value."""
         F = get_spark_imports().F
