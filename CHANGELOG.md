@@ -1,5 +1,15 @@
 # sparkless
 
+## 6.0.4
+
+### Patch Changes
+
+- 1f1e177: `F.flatten`, `F.array_min`, `F.array_max` and `F.slice` now compute a value instead of returning NULL for every row on the `select` path, and `F.array_distinct` now deduplicates on the `withColumn`/`agg` path instead of returning the array unchanged. `array_distinct(flatten(collect_list(x)))` therefore deduplicates. `F.slice` rejects `start=0` and a negative `length`, as Spark does, instead of answering NULL. The implementations live in one module both evaluators call, so the two projection paths can no longer disagree.
+- 3a4dfa5: `F.countDistinct` and `F.approx_count_distinct` now count when their target is an expression — `F.countDistinct(F.struct(...))`, `F.countDistinct(F.upper(c))`, `F.countDistinct(F.when(...))` — instead of returning 0. Composite target values (a struct is a dict) are keyed rather than hashed directly, so a struct target counts.
+- c983d3d: `F.exists`, `F.forall` and `F.filter` now compute their answer with SQL three-valued logic instead of returning NULL for every row, and `F.transform` maps its array instead of raising `LambdaTranslationError` from schema inference. Guards built on them — such as `size(a) != size(array_distinct(a))` over a `transform` — can now fire.
+- 364d34d: `F.struct(F.lit(v).alias("name"))` now names the field `name` instead of the positional `col1`. `Literal.alias()` records the alias on `_alias_name`, the attribute every "was this expression named by its author?" check reads, so an aliased literal is no longer indistinguishable from an unaliased one.
+- ea92789: `F.to_json` now serializes struct, map and array values instead of returning NULL on the `select` path, and `F.to_json(x).alias("j")` names the column `j` instead of re-deriving `to_json(struct(...))`. Spark's three different NULL rules are applied: a NULL struct field is omitted, a NULL array element and a NULL map value are kept.
+
 ## 6.0.3
 
 ### Patch Changes
