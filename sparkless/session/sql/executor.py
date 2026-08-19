@@ -1203,7 +1203,7 @@ class SQLExecutor:
                                 CaseWhen,
                                 Literal,
                                 IColumn,  # noqa: F821
-                            ] = SQLExprParser._parse_expression(col)
+                            ] = SQLExprParser.parse(col)
                             if alias:
                                 case_expr = case_expr.alias(alias)
                             select_exprs_no_group.append(case_expr)

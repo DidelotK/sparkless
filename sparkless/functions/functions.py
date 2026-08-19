@@ -1352,76 +1352,32 @@ class Functions:
     # SQL expression function
     @staticmethod
     def expr(expression: str) -> Union[ColumnOperation, Column, "CaseWhen", "Literal"]:
-        """Parse SQL expression into a column.
+        """Parse a SQL expression into a column.
 
         Args:
-            expression: SQL expression string (e.g., "id IS NOT NULL", "age > 18").
-                  Must use SQL syntax, not Python expressions.
+            expression: SQL expression string (e.g., "id IS NOT NULL",
+                "age > 18"). Must use SQL syntax, not Python expressions.
 
         Returns:
-            ColumnOperation for the expression.
+            The Column, ColumnOperation or CaseWhen the expression denotes.
 
         Raises:
-            RuntimeError: If no active SparkSession is available
-            ParseException: If SQL syntax is invalid
+            RuntimeError: If no active SparkSession is available.
+            ParseException: If the SQL is invalid or has no sparkless
+                equivalent. A SQL expression sparkless cannot evaluate raises
+                here; it is never downgraded to a warning and a column that
+                evaluates to NULL.
         """
         Functions._require_active_session(f"expression '{expression}'")
 
-        # Parse SQL expression instead of storing as raw string
-        from ..functions.core.sql_expr_parser import SQLExprParser
-        from ..functions.core.column import ColumnOperation, Column
-        from ..core.exceptions.analysis import ParseException
+        from ..functions.core.column import ColumnOperation
+        from ..functions.core.sql_expr import parse_and_bind
 
-        try:
-            parsed = SQLExprParser.parse(expression)
-            # If parsed result is a Column or ColumnOperation, return it
-            if isinstance(parsed, ColumnOperation):
-                # Mark as coming from F.expr() for detection in materialization
-                setattr(parsed, "_from_expr", True)
-                return parsed
-            elif isinstance(parsed, Column):
-                # Simple column reference - return as ColumnOperation for consistency
-                # Use a dummy operation to wrap the column
-                result = ColumnOperation(parsed, "expr", expression)
-                setattr(result, "_from_expr", True)
-                return result
-            # Check for CaseWhen or Literal
-            from ..functions.core.literals import Literal
-
-            if isinstance(parsed, Literal):
-                # Literal value - wrap in ColumnOperation
-                result = ColumnOperation(None, "lit", parsed)
-                setattr(result, "_from_expr", True)
-                return result
-            # For CaseWhen or other types, check if it has evaluate method
-            if hasattr(parsed, "evaluate") and hasattr(parsed, "conditions"):
-                # CaseWhen object - return directly (it has evaluate() method)
-                return parsed
-            # Fallback: wrap unknown types in ColumnOperation
-            result = ColumnOperation(None, "lit", Literal(parsed))
-            setattr(result, "_from_expr", True)
-            return result
-        except Exception as e:
-            if isinstance(e, ParseException):
-                raise
-            # Fallback to old behavior if parsing fails (for backward compatibility)
-            # But warn that this might not work correctly
-            import warnings
-
-            warnings.warn(
-                f"Failed to parse SQL expression '{expression}'. "
-                f"F.expr() should use SQL syntax (e.g., 'id IS NOT NULL'), "
-                f"not Python expressions (e.g., \"col('id').isNotNull()\"). "
-                f"Error: {str(e)}",
-                UserWarning,
-                stacklevel=2,
-            )
-            from sparkless.functions.base import Column
-
-            dummy = Column("__expr__")
-            operation = ColumnOperation(dummy, "expr", expression, name=expression)
-            operation.function_name = "expr"
-            return operation
+        parsed = parse_and_bind(expression)
+        if isinstance(parsed, ColumnOperation):
+            # Marks the expression as coming from F.expr() for materialization.
+            setattr(parsed, "_from_expr", True)
+        return parsed  # type: ignore[no-any-return]
 
     @staticmethod
     def minute(column: Union[Column, str]) -> ColumnOperation:

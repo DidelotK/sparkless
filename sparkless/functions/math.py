@@ -870,11 +870,14 @@ class MathFunctions:
 
         Returns:
             ColumnOperation representing Euler's number constant.
-        """
-        from sparkless.functions.core.literals import Literal
-        import math
 
-        return ColumnOperation(Literal(math.e), "lit", name="E()")
+        Note:
+            Emitted as the ``e`` operation, which ``ExpressionEvaluator``
+            implements. Wrapping the value in a ``lit`` operation over a
+            ``Literal`` column -- what this used to do -- evaluated to NULL for
+            every row.
+        """
+        return ColumnOperation(None, "e", name="E()")
 
     @staticmethod
     def pi() -> ColumnOperation:
@@ -882,11 +885,12 @@ class MathFunctions:
 
         Returns:
             ColumnOperation representing pi constant.
-        """
-        from sparkless.functions.core.literals import Literal
-        import math
 
-        return ColumnOperation(Literal(math.pi), "lit", name="PI()")
+        Note:
+            Emitted as the ``pi`` operation, for the same reason as
+            :meth:`e`.
+        """
+        return ColumnOperation(None, "pi", name="PI()")
 
     @staticmethod
     def ln(col: Union[Column, str]) -> ColumnOperation:

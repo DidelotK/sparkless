@@ -83,7 +83,6 @@ class TestColumnOrderingFunctionsCompatibility:
 
         assert_dataframes_equal(result, expected)
 
-    @pytest.mark.skip(reason="expr not yet implemented correctly")
     def test_expr(self, spark, spark_backend):
         """Test expr function."""
         from tests.fixtures.spark_backend import BackendType
