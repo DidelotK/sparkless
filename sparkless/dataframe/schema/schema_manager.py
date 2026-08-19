@@ -514,10 +514,11 @@ class SchemaManager:
                     col_name, struct_type if struct_type is not None else StructType([])
                 )
             elif operation in ("to_json", "to_csv"):
-                alias = SchemaManager._build_function_alias(
-                    operation, col_any.column, col_name
-                )
-                fields_map[col_name] = StructField(alias, StringType())
+                # col_name already holds the user's alias when there is one and
+                # the rendered default otherwise; re-deriving the default here
+                # discarded the alias, so F.to_json(x).alias("j") produced a
+                # column called to_json(struct(...)) (#2417).
+                fields_map[col_name] = StructField(col_name, StringType())
             elif operation == "to_date":
                 # to_date returns DateType
                 fields_map[col_name] = StructField(col_name, DateType())
@@ -814,10 +815,9 @@ class SchemaManager:
                     col.name, struct_type if struct_type is not None else StructType([])
                 )
             elif operation in ("to_json", "to_csv"):
-                alias = SchemaManager._build_function_alias(
-                    operation, getattr(col, "column", None), col.name
-                )
-                return StructField(alias, StringType())
+                # See the note on the select path: col.name is already the
+                # alias, or the rendered default when there is none.
+                return StructField(col.name, StringType())
             elif operation == "to_date":
                 # to_date returns DateType
                 return StructField(col.name, DateType())
@@ -936,42 +936,6 @@ class SchemaManager:
                 return StructType(collected_fields)
 
         return None
-
-    @staticmethod
-    def _build_function_alias(operation: str, column_expr: Any, fallback: str) -> str:
-        if operation in ("to_json", "to_csv") and column_expr is not None:
-            struct_alias = SchemaManager._format_struct_alias(column_expr)
-            return f"{operation}({struct_alias})"
-        return fallback
-
-    @staticmethod
-    def _format_struct_alias(expr: Any) -> str:
-        names = SchemaManager._extract_struct_field_names(expr)
-        if names:
-            return f"struct({', '.join(names)})"
-        return "struct(...)"
-
-    @staticmethod
-    def _extract_struct_field_names(expr: Any) -> List[str]:
-        names: List[str] = []
-        if (
-            isinstance(expr, ColumnOperation)
-            and getattr(expr, "operation", None) == "struct"
-        ):
-            first = SchemaManager._extract_column_name(expr.column)
-            if first:
-                names.append(first)
-            additional = expr.value
-            if isinstance(additional, tuple):
-                for item in additional:
-                    name = SchemaManager._extract_column_name(item)
-                    if name:
-                        names.append(name)
-        else:
-            name = SchemaManager._extract_column_name(expr)
-            if name:
-                names.append(name)
-        return names
 
     @staticmethod
     def _extract_column_name(expr: Any) -> Optional[str]:

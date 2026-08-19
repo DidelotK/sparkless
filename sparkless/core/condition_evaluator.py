@@ -470,6 +470,10 @@ class ConditionEvaluator:
             "array_min",
             "array_max",
             "slice",
+            # Absent from this whitelist, to_json fell to the NULL fall-through
+            # below: df.select(F.to_json(F.struct(...))) answered NULL for
+            # every row with no warning (#2417).
+            "to_json",
         ]:
             return ConditionEvaluator._evaluate_function_operation_value(row, operation)
 
@@ -879,6 +883,12 @@ class ConditionEvaluator:
             if not isinstance(params, tuple) or len(params) < 2:  # noqa: PLR2004
                 return None
             return slice_value(col_value, int(params[0]), int(params[1]))
+        elif operation_type == "to_json":
+            from .json_values import to_json_value
+
+            # The operand expression goes with the value: struct and map both
+            # evaluate to a dict, and Spark's NULL rule differs between them.
+            return to_json_value(col_value, operation.column)
         elif operation_type == "array_sort" or operation_type == "sort_array":
             # Sort array elements - operation.value contains asc boolean
             if not isinstance(col_value, list):
