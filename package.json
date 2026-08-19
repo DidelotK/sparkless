@@ -1,6 +1,6 @@
 {
   "name": "sparkless",
-  "version": "6.0.4",
+  "version": "6.1.0",
   "private": true,
   "description": "Release tooling shim. Sparkless is a Python package; this package.json exists only so Changesets has a package to version. The real artifact is built from pyproject.toml and published to Azure Artifacts. See .changeset/README.md.",
   "scripts": {
