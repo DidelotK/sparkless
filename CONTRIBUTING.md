@@ -43,15 +43,23 @@ df.select(F.flatten(x))            # None          <- ConditionEvaluator
 df.withColumn("f", F.flatten(x))   # [1, 2, 3, 4]  <- ExpressionEvaluator
 ```
 
-**How large the drift is, measured on `main` (`d3b0809`, 2026-08-19):** of 30
-functions sampled from those `ExpressionEvaluator` implements, **26 return
-NULL** when projected through `select` — `atan2`, `hypot`, `signum`, `cbrt`,
-`log1p`, `expm1`, `pmod`, `bit_length`, `octet_length`, `btrim`, `left`,
-`right`, `position`, `split_part`, `find_in_set`, `format_string`, `hash`,
-`typeof`, `to_char`, `try_add`, `try_divide`, `equal_null`, `arrays_zip`,
-`sequence`, `map_from_arrays`, `to_utc_timestamp`. Each of those is a future
-"function X returns NULL" issue that has not been filed yet. This is a
-backlog, not a list of exceptions.
+**How large the drift is, measured on `main` (`1f1e177`, 2026-08-19):** of 62
+functions sampled from those `ExpressionEvaluator` implements, **55 silently
+answer NULL** through `select` where PySpark 4.0.0 computes a value — `atan2`,
+`hypot`, `signum`, `cbrt`, `log1p`, `expm1`, `pmod`, `bit_length`,
+`octet_length`, `btrim`, `left`, `right`, `position`, `split_part`,
+`find_in_set`, `format_string`, `hash`, `typeof`, `to_char`, `try_add`,
+`try_divide`, `equal_null`, `arrays_zip`, `sequence`, `map_from_arrays`,
+`to_utc_timestamp`, and 29 more. Both engines were run over the same 62
+expressions: PySpark returned NULL for **none** of them.
+
+That is ~89 % of the sample, and it is a **lower bound** on the divergence —
+the comparison is NULL-ness only, so a function in the "computes" column may
+still compute the wrong value. The full inventory is unmeasured;
+`ExpressionEvaluator`'s registry holds ~190 entries.
+
+Tracked as **Solya-app/solya-data-platform#2432**. It is a backlog, not a list
+of accepted exceptions.
 
 ### Why it stays invisible
 
@@ -100,6 +108,40 @@ these functions differ from each other.
 
 A test asserting only `select` would not have caught any of the drift above.
 Assert that `select` and `withColumn` agree.
+
+### A green downstream suite is not evidence about sparkless
+
+The reflex when changing engine behaviour is to run the biggest consumer's
+test suite and read green as safety. It is worth doing — but be exact about
+what it proves.
+
+Solya-app/sparkless#46–#51 were validated against `solya-data-platform` on a
+fresh `develop`, before and after, all 31 499 collected tests: **zero status
+flips in either direction.** That is a genuine no-regression result and it is
+*all* it is. It is not evidence that the fixes work, because that suite never
+executes the functions they fix:
+
+- the 15 `solya-data-platform` test files matching `flatten` match English
+  prose — "reach the store unflattened", "flattened names";
+- the 30 matching `to_json` match `ErrorContext.to_json()`, an ordinary Python
+  method on a Python class.
+
+Neither `F.flatten` nor `F.to_json` is called anywhere in that suite. The same
+holds for the rest of the list above. **This is precisely why the bugs
+shipped**, and the next reader will make the same mistake unless it is written
+down: a downstream suite going green tells you that you broke nothing it can
+see, and its blind spot is exactly the set of functions most likely to be
+broken.
+
+What *is* evidence: a test that fails before your change and passes after, run
+under `MOCK_SPARK_TEST_BACKEND=pyspark` as well as under sparkless. And note
+which of your new tests were green from the start — those are guards, not
+proof, and saying so in the PR keeps the count honest.
+
+Also treat a downstream test that **starts passing** after a sparkless change
+as a red flag, not a win. sparkless has been the wrong one in every recorded
+divergence, so a test going green may mean the change broke the behaviour the
+test was asserting. Investigate before reporting it as an improvement.
 
 ### Not just `select` vs `withColumn`
 
