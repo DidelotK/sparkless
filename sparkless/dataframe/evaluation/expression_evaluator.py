@@ -1149,6 +1149,18 @@ class ExpressionEvaluator:
         elif func_name == "current_date":
             return dt_module.date.today()
 
+        # A NULLARY function has no operand, so a ``value`` of None is not a
+        # null input to propagate -- it is the absence of an input. Without
+        # this, the guard below returns NULL for every row of uuid(), pi() and
+        # e() whenever they are evaluated through this path (``withColumn``),
+        # which is how ``F.expr("uuid()")`` wrote NULL into identifier columns.
+        if (
+            operation.column is None
+            and operation.value is None
+            and func_name in self._function_registry
+        ):
+            return self._function_registry[func_name](value, operation)
+
         if value is None and func_name not in ("ascii", "base64", "unbase64"):
             return None
 
@@ -2110,6 +2122,7 @@ class ExpressionEvaluator:
             "signum": self._func_signum,
             "e": self._func_e,
             "pi": self._func_pi,
+            "uuid": self._func_uuid,
             # Cast function
             "cast": self._func_cast,
             # Datetime functions
@@ -3250,6 +3263,12 @@ class ExpressionEvaluator:
         """Pi constant (π)."""
         # This is a constant function, value is ignored
         return math.pi
+
+    def _func_uuid(self, value: Any, operation: ColumnOperation) -> Any:
+        """Spark SQL's uuid(): a fresh random UUID for every row."""
+        import uuid as uuid_module
+
+        return str(uuid_module.uuid4())
 
     # Array function implementations
     def _func_array_join(self, value: Any, operation: ColumnOperation) -> Any:

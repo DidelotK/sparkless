@@ -1030,6 +1030,7 @@ class LazyEvaluationEngine:
                         # "array_distinct",  # Removed feature
                         "pi",  # Force manual materialization for constant functions
                         "e",  # Force manual materialization for constant functions
+                        "uuid",  # Row-varying; the backend has no translation
                         # Allow backend to handle datediff via SQL path
                         # "cast",  # Removed - Polars handles cast operations
                         # "when",  # Removed - Polars handles when/otherwise via CaseWhen
