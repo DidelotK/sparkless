@@ -57,6 +57,14 @@ jobs:
             coverage.xml
             htmlcov
           if-no-files-found: ignore
+          # Nothing downloads these — they exist for a human to open after a
+          # run. At the 90-day default they held 542 MB of the org's SHARED
+          # storage (270 artifacts, every one from 2026-07-21/22) while
+          # `Failed to CreateArtifact: Artifact storage quota has been hit`
+          # was failing live CI in solya-data-platform. The quota is org-wide,
+          # so this repo's default spends another repo's budget. One day is
+          # longer than anyone waits to open a coverage report.
+          retention-days: 1
 
   test-parity:
     runs-on: ubuntu-latest
@@ -81,6 +89,7 @@ jobs:
             coverage.xml
             htmlcov
           if-no-files-found: ignore
+          retention-days: 1  # see coverage-unit above
 
   # There is no test-compatibility job. tests/compatibility/ was moved to
   # tests/archive/compatibility/ by d608d2e (2025-12-14), which migrated its
@@ -123,4 +132,5 @@ jobs:
             coverage.xml
             htmlcov
           if-no-files-found: ignore
+          retention-days: 1  # see coverage-unit above
 
