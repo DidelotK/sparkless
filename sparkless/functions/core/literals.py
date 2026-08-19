@@ -43,6 +43,13 @@ class Literal(IColumn):
         self._resolver = resolver
         self._is_lazy = resolver is not None
 
+        #: The user-supplied alias, when ``alias()`` was called. ``Column`` and
+        #: ``ColumnOperation`` both carry this attribute, and everything that
+        #: asks "was this expression named by its author?" reads it -- including
+        #: ``struct_builder.field_name_for``. A ``Literal`` that only rewrote
+        #: its display name looked unaliased to those callers (#2417).
+        self._alias_name: Optional[str] = None
+
         # Use the actual value as column name for PySpark compatibility
         # Handle boolean values to match PySpark's lowercase representation
         if isinstance(value, bool):
@@ -267,13 +274,22 @@ class Literal(IColumn):
         return ColumnOperation(self, "rlike", pattern)
 
     def alias(self, name: str) -> "Literal":
-        """Create an alias for the literal."""
+        """Create an alias for the literal.
+
+        Records the alias on ``_alias_name`` as well as on ``_name``. Rewriting
+        only ``_name`` made the alias indistinguishable from the literal's
+        default rendering, so ``F.struct(F.lit("axis").alias("axis_type"))``
+        named its field ``col1`` -- the positional name reserved for an
+        *unaliased* literal -- while ``F.col("x").alias("n")`` in the same
+        struct kept its name (#2417).
+        """
         aliased_literal = Literal(
             self.value,
             self.data_type,
             resolver=self._resolver,
         )
         aliased_literal._name = name
+        aliased_literal._alias_name = name
         return aliased_literal
 
     def asc(self) -> "ColumnOperation":
