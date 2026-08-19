@@ -2138,7 +2138,11 @@ class ExpressionEvaluator:
             "array_sort": self._func_array_sort,
             "array_union": self._func_array_union,
             "arrays_zip": self._func_arrays_zip,
+            "array_distinct": self._func_array_distinct,
             "flatten": self._func_flatten,
+            "array_min": self._func_array_min,
+            "array_max": self._func_array_max,
+            "slice": self._func_slice,
             "sequence": self._func_sequence,
             "size": self._func_size,
             # Map functions
@@ -3311,19 +3315,56 @@ class ExpressionEvaluator:
         return -1
 
     def _func_flatten(self, value: Any, operation: ColumnOperation) -> Any:
-        """Flatten nested arrays."""
-        if value is None:
-            return None
-        if not isinstance(value, (list, tuple)):
-            return None
+        """Flatten one level of nesting.
 
-        result: List[Any] = []
-        for item in value:
-            if isinstance(item, (list, tuple)):
-                result.extend(item)
-            else:
-                result.append(item)
-        return result
+        Delegates to the canonical implementation so this path and the
+        ``select`` path cannot answer differently. The local version this
+        replaced appended a NULL inner array as an element, where Spark makes
+        the whole result NULL.
+        """
+        from ...core.array_values import flatten_value
+
+        return flatten_value(value)
+
+    def _func_array_distinct(self, value: Any, operation: ColumnOperation) -> Any:
+        """Deduplicate an array, keeping first-seen order.
+
+        Had no registry entry, so ``F.array_distinct`` reached the identity
+        fall-through on this path and returned the array *with its duplicates
+        intact* -- which is what made the data-platform tag rollup
+        ``array_distinct(flatten(collect_list(tags)))`` keep duplicates even
+        once ``flatten`` worked. The ``select`` path already deduplicated, so
+        the two paths disagreed.
+        """
+        from ...core.array_values import array_distinct_value
+
+        return array_distinct_value(value)
+
+    def _func_array_min(self, value: Any, operation: ColumnOperation) -> Any:
+        """Smallest non-NULL element of an array.
+
+        Had no registry entry at all, so it reached the identity fall-through
+        and returned the *whole array* -- a plausible-looking wrong answer
+        rather than an error.
+        """
+        from ...core.array_values import array_min_value
+
+        return array_min_value(value)
+
+    def _func_array_max(self, value: Any, operation: ColumnOperation) -> Any:
+        """Largest non-NULL element of an array."""
+        from ...core.array_values import array_max_value
+
+        return array_max_value(value)
+
+    def _func_slice(self, value: Any, operation: ColumnOperation) -> Any:
+        """Sub-array of ``length`` elements from 1-based ``start``."""
+        from ...core.array_values import slice_value
+
+        params = getattr(operation, "value", None)
+        if not isinstance(params, tuple) or len(params) < 2:  # noqa: PLR2004
+            return None
+        return slice_value(value, int(params[0]), int(params[1]))
 
     def _func_sequence(self, value: Any, operation: ColumnOperation) -> Any:
         """Generate sequence array from start to stop by step."""

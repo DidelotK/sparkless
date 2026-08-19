@@ -434,9 +434,20 @@ class ArrayFunctions:
         Returns:
             ColumnOperation representing the slice function.
 
+        Raises:
+            PySparkValueError: If ``start`` is 0 or ``length`` is negative --
+                the two argument values Spark rejects. Both are checked here,
+                when the expression is built, so that the mistake cannot be
+                swallowed by an enclosing ``except`` during row evaluation and
+                degrade into a silent NULL.
+
         Example:
             >>> df.select(F.slice(F.col("nums"), 2, 3))
         """
+        from ..core.array_values import validate_slice_arguments
+
+        validate_slice_arguments(start, length)
+
         if isinstance(column, str):
             column = Column(column)
 
