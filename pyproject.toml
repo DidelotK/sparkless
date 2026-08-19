@@ -210,12 +210,19 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# tests/archive/ is excluded from *default* collection only: a bare `pytest`
+# should not inherit its 167 known failures. It does NOT block an explicit
+# `pytest tests/archive/`, which is how the nightly test-archive job collects it
+# (measured: the explicit path collects all 1330 tests with this in place).
+# The `--ignore=tests/archive` that used to sit in addopts alongside this was
+# redundant -- either mechanism alone excludes the default run, and neither ever
+# affected an explicit path -- and it read as though it locked the directory out
+# entirely, which is part of why nobody rediscovered the suite for eight months.
 norecursedirs = ["archive"]
 addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
-    "--ignore=tests/archive",
     "-n", "auto",  # Parallel execution (requires pytest-xdist); use -n 0 for serial
     "--cov=sparkless",
     "--cov-report=term-missing",

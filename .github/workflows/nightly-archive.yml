@@ -1,0 +1,50 @@
+name: Nightly archive suite
+
+# tests/archive/ holds 92 test files that no CI job ran between 2025-12-14 and
+# 2026-08-19.
+#
+# It is NOT excluded for cost. Measured on this tree, same flags for both:
+#
+#   pytest <dir> -o addopts= --no-cov -q --tb=no -n 8 --dist loadfile
+#
+#   tests/archive                                 1330 tests   4.4 s
+#   tests/unit + tests/parity + tests/documentation  1710 tests   9.3 s
+#
+# The archive is less than half the cost of what CI already runs on every PR
+# (11.9 s serial), and nothing in d608d2e -- the commit that archived it --
+# mentions duration. "It was too slow for PRs" is a story; these are the numbers.
+#
+# It is excluded because 167 of its 1330 tests fail. It is not deleted because
+# 92.3 % of its tests have no same-named equivalent in tests/unit/ or
+# tests/parity/ (114 of 1488 names overlap; 85 of 108 files overlapped by zero),
+# and roughly 46 of the failures point at real sparkless defects with no live
+# test anywhere -- filed as Solya-app/solya-data-platform #2417-#2420.
+#
+# So it runs here, nightly, held to the shrink-only allowlist in
+# tests/archive/known-failures.txt. This is the only job that collects it; the
+# PR-path jobs in ci.yml name tests/unit, tests/parity and tests/documentation
+# explicitly and never see it.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  test-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      # The script runs `python3 -m pytest tests/archive/` itself and applies
+      # three rules: a failure outside the allowlist fails the job, an allowlist
+      # entry that stopped failing fails the job as stale, and zero tests
+      # collected fails the job. There is no exit-code tolerance anywhere in it.
+      - name: Archive suite against the known-failure allowlist
+        env:
+          TZ: "America/New_York"
+        run: python3 scripts/ci/check_archive_baseline.py

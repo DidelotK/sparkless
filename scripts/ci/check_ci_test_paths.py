@@ -8,10 +8,15 @@ moved to ``tests/archive/compatibility/`` in December 2025 and the job kept
 running -- green -- against a path that had not existed for months.
 
 The defect is not "someone forgot to update a path". It is that nothing in the
-repository connects the paths in ``.github/workflows/ci.yml`` to the paths on
-disk, so the two can drift silently and forever. This closes that loop: every
-``pytest <path>`` argument in the workflow must resolve to a directory that
+repository connects the paths in ``.github/workflows/`` to the paths on disk, so
+the two can drift silently and forever. This closes that loop: every
+``pytest <path>`` argument in **every** workflow must resolve to a directory that
 contains at least one ``test_*.py`` file.
+
+A test path can also live in a script rather than in YAML -- the nightly archive
+job runs ``scripts/ci/check_archive_baseline.py``, which invokes pytest itself.
+Exempting it would recreate exactly the blind spot this check exists to close, so
+its ``ARCHIVE_DIR`` is imported and held to the same rule.
 
 Usage::
 
@@ -23,7 +28,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_archive_baseline import ARCHIVE_DIR  # noqa: E402
 
 # Matches the path argument of a pytest invocation, e.g.
 #   python3 -m pytest tests/unit/ -v -n 8 ...
@@ -52,49 +60,66 @@ def _pytest_paths(workflow_text: str) -> "list[str]":
     return list(seen)
 
 
+def _collects_tests(raw: str) -> "str | None":
+    """Describe why ``raw`` collects nothing, or None if it is fine."""
+    target = REPO_ROOT / raw
+    if not target.exists():
+        return f"{raw}: does not exist"
+    if target.is_file():
+        return None
+    if not any(target.rglob(TEST_FILE_GLOB)):
+        return f"{raw}: contains no {TEST_FILE_GLOB} file"
+    return None
+
+
 def main() -> int:
-    if not WORKFLOW.is_file():
-        sys.stderr.write(f"error: {WORKFLOW} is missing\n")
+    workflows = sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
+    if not workflows:
+        sys.stderr.write(f"error: no workflow files found in {WORKFLOW_DIR}\n")
         return 1
 
-    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    # scripts/ci/check_archive_baseline.py names its own pytest target, so it is
+    # checked alongside the YAML rather than exempted from the rule.
+    paths: dict[str, str] = {
+        str(ARCHIVE_DIR.relative_to(REPO_ROOT)): "scripts/ci/check_archive_baseline.py"
+    }
+    tolerated: list[str] = []
 
-    tolerated = [
-        line.strip()
-        for line in workflow_text.splitlines()
-        if not line.lstrip().startswith("#") and EXIT_CODE_5_TOLERANCE.search(line)
-    ]
+    for workflow in workflows:
+        text = workflow.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            if EXIT_CODE_5_TOLERANCE.search(line):
+                tolerated.append(f"{workflow.name}: {line.strip()}")
+        for raw in _pytest_paths(text):
+            paths.setdefault(raw, workflow.name)
+
     if tolerated:
         sys.stderr.write(
-            f"error: {WORKFLOW.name} treats pytest exit code 5 (no tests collected) "
+            "error: a workflow treats pytest exit code 5 (no tests collected) "
             "as success.\n"
         )
         for line in tolerated:
             sys.stderr.write(f"  - {line}\n")
         return 1
 
-    paths = _pytest_paths(workflow_text)
-    if not paths:
+    if len(paths) < 2:
         sys.stderr.write(
-            f"error: no pytest invocation found in {WORKFLOW.name}; either the "
-            "workflow stopped running tests or this check's regex is stale\n"
+            "error: no pytest invocation found in any workflow; either CI stopped "
+            "running tests or this check's regex is stale\n"
         )
         return 1
 
-    failures = []
-    for raw in paths:
-        target = REPO_ROOT / raw
-        if not target.exists():
-            failures.append(f"{raw}: does not exist")
-            continue
-        if target.is_file():
-            continue
-        if not any(target.rglob(TEST_FILE_GLOB)):
-            failures.append(f"{raw}: contains no {TEST_FILE_GLOB} file")
+    failures = [
+        f"{problem}  (named by {source})"
+        for raw, source in paths.items()
+        if (problem := _collects_tests(raw)) is not None
+    ]
 
     if failures:
         sys.stderr.write(
-            f"error: {WORKFLOW.name} runs pytest against paths that collect nothing.\n"
+            "error: CI runs pytest against paths that collect nothing.\n"
             "A suite that collects nothing is a failure, not a pass.\n"
         )
         for failure in failures:
@@ -102,8 +127,8 @@ def main() -> int:
         return 1
 
     print(f"ok: {len(paths)} CI test path(s) resolve to collectible tests")
-    for raw in paths:
-        print(f"  - {raw}")
+    for raw, source in paths.items():
+        print(f"  - {raw}  ({source})")
     return 0
 
 
