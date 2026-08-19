@@ -10,7 +10,7 @@ asserted on directly, without a DataFrame and without evaluating anything.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 
 class Node:
@@ -141,6 +141,15 @@ class Lambda(Node):
 
 @dataclass(frozen=True)
 class Interval(Node):
-    """An ``INTERVAL`` literal, kept whole so the binder can reject it."""
+    """An ``INTERVAL`` literal, e.g. ``INTERVAL 90 DAYS``.
 
+    Attributes:
+        parts: The ``(quantity, unit)`` pairs as written, units upper-cased.
+            Spark allows several (``INTERVAL 1 YEAR 2 MONTHS``); sparkless can
+            only evaluate a single day-based interval, and the binder says so
+            for anything else rather than guessing.
+        text: The literal as written, quoted in error messages.
+    """
+
+    parts: Sequence[Tuple[int, str]]
     text: str

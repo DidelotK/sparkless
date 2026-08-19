@@ -512,24 +512,46 @@ class SQLExpressionParser:
         return self.source[start_offset:end_offset].strip()
 
     def _parse_interval(self) -> nodes.Node:
-        """Parse an ``INTERVAL`` literal well enough to reject it clearly."""
+        """Parse an ``INTERVAL`` literal into its (quantity, unit) parts."""
         start_offset = self.current.position
         self._advance()
         end_offset = self.current.position
+        parts: List[Tuple[int, str]] = []
 
         while True:
             token = self.current
-            if token.type is TokenType.NUMBER or token.type is TokenType.STRING:
-                self._advance()
-                end_offset = token.position + len(token.text)
-                continue
-            if token.type is TokenType.IDENTIFIER and token.upper in _INTERVAL_UNITS:
-                self._advance()
-                end_offset = token.position + len(token.text)
-                continue
-            break
+            if (
+                token.type is not TokenType.NUMBER
+                and token.type is not TokenType.STRING
+            ):
+                break
 
-        return nodes.Interval(self.source[start_offset:end_offset].strip())
+            quantity = token.value
+            if isinstance(quantity, str):
+                # Spark also accepts INTERVAL '90' DAY.
+                try:
+                    quantity = int(quantity)
+                except ValueError:
+                    self._fail("expected a whole number of interval units")
+            if not isinstance(quantity, int) or isinstance(quantity, bool):
+                self._fail("expected a whole number of interval units")
+
+            unit_token = self.tokens[self.index + 1]
+            if (
+                unit_token.type is not TokenType.IDENTIFIER
+                or unit_token.upper not in _INTERVAL_UNITS
+            ):
+                break
+
+            self._advance()
+            self._advance()
+            end_offset = unit_token.position + len(unit_token.text)
+            parts.append((quantity, unit_token.upper))
+
+        if not parts:
+            self._fail("expected a quantity and a unit after INTERVAL")
+
+        return nodes.Interval(parts, self.source[start_offset:end_offset].strip())
 
 
 def parse(source: str) -> nodes.Node:

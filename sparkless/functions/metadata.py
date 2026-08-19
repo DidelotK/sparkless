@@ -36,6 +36,20 @@ class MetadataFunctions:
         )
 
     @staticmethod
+    def uuid() -> ColumnOperation:
+        """Generate a random UUID string, a different one for every row.
+
+        Spark SQL's ``uuid()``. PySpark's Python API does not expose it -- it
+        is reachable only through ``F.expr("uuid()")`` -- but sparkless needs
+        a real implementation behind that SQL name, because returning NULL
+        writes NULL into whatever column the caller meant as an identifier.
+
+        Returns:
+            ColumnOperation representing uuid().
+        """
+        return ColumnOperation(None, "uuid", name="uuid()")
+
+    @staticmethod
     def spark_partition_id() -> ColumnOperation:
         """Returns the partition ID (returns 0 in mock).
 

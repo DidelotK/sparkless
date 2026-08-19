@@ -20,6 +20,36 @@ def _single_value(spark: Any, column: Any) -> Any:
     return spark.createDataFrame([{"dummy": 1}]).select(column).collect()[0][0]
 
 
+class TestNullaryFunctionsInWithColumn:
+    """A function with no operand must not be treated as a null operand.
+
+    ``_evaluate_function_call`` propagated NULL whenever the evaluated operand
+    was None. For a nullary function there *is* no operand, so the guard fired
+    on every row and ``withColumn`` produced a column of NULLs -- for ``pi()``,
+    ``e()`` and ``uuid()`` alike. ``select`` went through a different
+    evaluator and was unaffected, which is why this stayed hidden.
+    """
+
+    def test_pi_in_with_column(self, spark: Any) -> None:
+        """``withColumn`` agrees with ``select`` for pi."""
+        F = get_spark_imports().F
+        df = spark.createDataFrame([{"dummy": 1}, {"dummy": 2}])
+
+        values = [row["p"] for row in df.withColumn("p", F.pi()).collect()]
+
+        assert values == [math.pi, math.pi]
+
+    def test_uuid_in_with_column(self, spark: Any) -> None:
+        """``withColumn`` gives every row its own uuid."""
+        F = get_spark_imports().F
+        df = spark.createDataFrame([{"dummy": 1}, {"dummy": 2}])
+
+        values = [row["u"] for row in df.withColumn("u", F.expr("uuid()")).collect()]
+
+        assert len(set(values)) == 2
+        assert all(isinstance(v, str) and len(v) == 36 for v in values)
+
+
 class TestMathConstants:
     """A constant function must return its constant, not NULL."""
 

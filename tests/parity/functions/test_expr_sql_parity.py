@@ -29,6 +29,7 @@ PySpark with ``SPARKLESS_TEST_BACKEND=pyspark``.
 Tracked as Solya-app/solya-data-platform#2418.
 """
 
+from datetime import date, timedelta
 from typing import Any, List
 
 import pytest
@@ -228,6 +229,40 @@ class TestExprPredicateParity(ParityTestBase):
         assert _evaluate(spark, expression) == [1, 0]
 
 
+class TestExprUuidParity(ParityTestBase):
+    """``uuid()`` must produce identifiers, not NULL."""
+
+    def _ids(self, spark: Any) -> List[Any]:
+        """Project ``uuid()`` over a three-row frame."""
+        F = get_spark_imports().F
+        df = spark.createDataFrame([{"n": 1}, {"n": 2}, {"n": 3}])
+        return [row["id"] for row in df.select(F.expr("uuid()").alias("id")).collect()]
+
+    def test_uuid_returns_a_uuid_string(self, spark: Any) -> None:
+        """Every row gets a 36-character UUID."""
+        ids = self._ids(spark)
+        assert all(isinstance(i, str) and len(i) == 36 for i in ids)
+
+    def test_uuid_differs_per_row(self, spark: Any) -> None:
+        """Spark's uuid() is per-row, not a constant."""
+        assert len(set(self._ids(spark))) == 3
+
+    def test_uuid_in_with_column(self, spark: Any) -> None:
+        """``withColumn`` is the shape most pipeline call sites use.
+
+        It went through a different evaluator, whose null-propagation guard
+        returned NULL for every nullary function -- so an ``id`` column built
+        this way was NULL for every row.
+        """
+        F = get_spark_imports().F
+        df = spark.createDataFrame([{"n": 1}, {"n": 2}, {"n": 3}])
+
+        ids = [row["id"] for row in df.withColumn("id", F.expr("uuid()")).collect()]
+
+        assert len(set(ids)) == 3
+        assert all(isinstance(i, str) and len(i) == 36 for i in ids)
+
+
 class TestExprCastParity(ParityTestBase):
     """``CAST`` and ``TRY_CAST`` are syntax, not function calls."""
 
@@ -242,6 +277,54 @@ class TestExprCastParity(ParityTestBase):
     def test_cast_of_a_backticked_column(self, spark: Any) -> None:
         """Backticked identifiers resolve inside CAST too."""
         assert _evaluate(spark, "cast(`age` AS STRING)") == ["25", "40"]
+
+
+class TestExprIntervalParity(ParityTestBase):
+    """Day-based ``INTERVAL`` arithmetic, the shape the pipelines use."""
+
+    def _dates(self, spark: Any, expression: str) -> List[Any]:
+        """Collect a date expression over a two-row frame of known dates."""
+        F = get_spark_imports().F
+        df = spark.createDataFrame([{"d": date(2026, 8, 19)}, {"d": date(2026, 1, 1)}])
+        return [
+            str(row["r"]) for row in df.select(F.expr(expression).alias("r")).collect()
+        ]
+
+    @pytest.mark.parametrize(  # type: ignore[misc,untyped-decorator]
+        "expression,expected",
+        [
+            ("d - INTERVAL 90 DAYS", ["2026-05-21", "2025-10-03"]),
+            ("d + INTERVAL 30 DAYS", ["2026-09-18", "2026-01-31"]),
+            ("d - INTERVAL 1 WEEK", ["2026-08-12", "2025-12-25"]),
+            ("d - INTERVAL 1 DAY", ["2026-08-18", "2025-12-31"]),
+        ],
+    )
+    def test_day_interval_arithmetic(
+        self, spark: Any, expression: str, expected: List[Any]
+    ) -> None:
+        """PySpark 4.0.0's date for each interval expression."""
+        assert self._dates(spark, expression) == expected
+
+    def test_interval_as_its_own_expression(self, spark: Any) -> None:
+        """``current_date() - F.expr("INTERVAL n DAYS")``.
+
+        This is how every pipeline call site writes it: the interval is its
+        own ``F.expr`` and the subtraction happens in Python. It used to bind
+        to a *column reference* named ``INTERVAL_90_DAYS``, so the comparison
+        below silently matched nothing.
+        """
+        F = get_spark_imports().F
+        df = spark.createDataFrame(
+            [
+                {"d": date.today() - timedelta(days=5)},
+                {"d": date.today() - timedelta(days=200)},
+            ]
+        )
+        cutoff = F.current_date() - F.expr("INTERVAL 90 DAYS")
+
+        kept = df.filter(F.col("d") >= cutoff).collect()
+
+        assert len(kept) == 1
 
 
 class TestExprAggregateParity(ParityTestBase):

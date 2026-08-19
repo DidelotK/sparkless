@@ -2546,6 +2546,13 @@ class Functions:
         return MetadataFunctions.monotonically_increasing_id()
 
     @staticmethod
+    def uuid() -> ColumnOperation:
+        """Generate a random UUID string per row (Spark SQL's ``uuid()``)."""
+        from sparkless.functions.metadata import MetadataFunctions
+
+        return MetadataFunctions.uuid()
+
+    @staticmethod
     def spark_partition_id() -> ColumnOperation:
         """Return partition ID."""
         from sparkless.functions.metadata import MetadataFunctions

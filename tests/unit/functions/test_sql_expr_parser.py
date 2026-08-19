@@ -270,19 +270,30 @@ class TestUnsupportedExpressionsRaise:
             parse_and_bind_expression(expression)
 
     def test_an_unknown_function_raises(self) -> None:
-        """``uuid()`` has no sparkless implementation and must say so.
+        """A function sparkless does not implement must say so.
 
-        It used to bind to a hand-built operation that evaluated to NULL for
-        every row -- a silent wrong answer at five call sites in the data
-        platform.
+        The old parser bound *every* unknown name to a hand-built operation
+        that evaluated to NULL for every row -- a silent wrong answer.
         """
-        with pytest.raises(ParseException, match="Undefined function 'uuid'"):
-            parse_and_bind_expression("uuid()")
+        with pytest.raises(ParseException, match="Undefined function 'no_such_fn'"):
+            parse_and_bind_expression("no_such_fn(a)")
 
-    def test_an_interval_literal_raises(self) -> None:
-        """sparkless cannot evaluate INTERVAL arithmetic."""
-        with pytest.raises(ParseException, match="INTERVAL"):
-            parse_and_bind_expression("day - INTERVAL 5 YEARS")
+    def test_a_month_based_interval_raises(self) -> None:
+        """Months cannot be approximated in days, so they are refused.
+
+        Day-based intervals bind (see the parity tests); month-based ones
+        would need ``F.add_months``, which returns NULL for every row.
+        """
+        with pytest.raises(ParseException, match="day-based INTERVAL"):
+            parse_and_bind_expression("day_col - INTERVAL 5 YEARS")
+
+    def test_a_day_interval_binds_to_a_timedelta(self) -> None:
+        """``INTERVAL 90 DAYS`` on its own is a 90-day timedelta literal."""
+        import datetime
+
+        bound = parse_and_bind_expression("INTERVAL 90 DAYS")
+
+        assert bound.value == datetime.timedelta(days=90)
 
     def test_a_higher_order_lambda_raises(self) -> None:
         """A lambda would bind to a function that returns NULL for every row.

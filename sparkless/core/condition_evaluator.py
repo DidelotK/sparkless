@@ -405,6 +405,7 @@ class ConditionEvaluator:
             "concat_ws",
             "pi",
             "e",
+            "uuid",
             "substr",
             "substring",
             "translate",
@@ -523,6 +524,10 @@ class ConditionEvaluator:
         operation_type = operation.operation
 
         # Handle constant functions that don't need column values
+        if operation_type == "uuid":
+            import uuid as uuid_module
+
+            return str(uuid_module.uuid4())
         if operation_type == "pi":
             import math
 

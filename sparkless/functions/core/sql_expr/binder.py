@@ -174,6 +174,27 @@ def _expects_column(annotation: Any) -> bool:
     return _is_column_type(annotation)
 
 
+def _accepts_column(annotation: Any) -> bool:
+    """Whether a parameter *tolerates* a column, even if literals go raw.
+
+    ``_expects_column`` answers what to do with a **literal**;  this answers
+    what to do with a **column expression**. They differ for a parameter like
+    ``F.try_divide``'s ``left: Union[Column, str, int, float]``, which takes a
+    bare number *and* a column: a SQL literal is passed raw, but
+    ``try_divide(margin, price)`` must still pass the columns through.
+    """
+    if annotation is inspect.Parameter.empty or annotation is Any:
+        return True
+
+    if getattr(annotation, "__origin__", None) is Union:
+        arguments = getattr(annotation, "__args__", ())
+        return any(
+            _is_column_type(argument) or argument is Any for argument in arguments
+        )
+
+    return _is_column_type(annotation)
+
+
 def _is_column_type(annotation: Any) -> bool:
     """Whether an annotation is the ``Column`` class or a subclass."""
     return isinstance(annotation, type) and issubclass(annotation, Column)
@@ -244,12 +265,38 @@ class SQLExpressionBinder:
         )
 
     def _bind_interval(self, node: nodes.Interval) -> Any:
-        """Reject INTERVAL literals, which sparkless cannot evaluate."""
-        raise ParseException(
-            f"Unsupported SQL expression {self.source!r}: sparkless has no "
-            f"INTERVAL literal ({node.text!r}). Use the date functions "
-            f"instead, e.g. F.expr('date_sub(current_date(), 30)')"
-        )
+        """Bind a day-based ``INTERVAL`` to a :class:`datetime.timedelta`.
+
+        A SQL day interval *is* a timedelta, so it needs no interval type of
+        its own: ``date - lit(timedelta(days=90))`` already evaluates the way
+        Spark's ``date - INTERVAL 90 DAYS`` does, and comparisons against it
+        work too. This also covers the shape the expression is actually used
+        in, where the interval is its own ``F.expr`` and the subtraction
+        happens in Python: ``F.current_date() - F.expr("INTERVAL 90 DAYS")``.
+
+        Month-based units are refused rather than approximated: they would
+        need ``F.add_months``, which returns NULL for every row and every
+        argument, and no whole number of days is a month.
+        """
+        import datetime
+
+        days = 0
+        for quantity, unit in node.parts:
+            if unit in ("DAY", "DAYS"):
+                days += quantity
+            elif unit in ("WEEK", "WEEKS"):
+                days += quantity * 7
+            else:
+                raise ParseException(
+                    f"Unsupported SQL expression {self.source!r}: sparkless "
+                    f"can only evaluate day-based INTERVALs -- {unit} would "
+                    f"need F.add_months, which returns NULL for every row. "
+                    f"Rewrite it in days, e.g. INTERVAL 1825 DAYS for 5 years"
+                )
+
+        from ...functions import Functions
+
+        return Functions.lit(datetime.timedelta(days=days))
 
     def _bind_lambda(self, node: nodes.Lambda) -> Any:
         """Reject a lambda outside a higher-order call."""
@@ -483,6 +530,13 @@ class SQLExpressionBinder:
                 continue
 
             if _is_column(value):
+                # The parameter passes literals raw, but that says nothing
+                # about columns: ``F.try_divide``'s operands take a bare number
+                # *or* a column. Only refuse when the annotation cannot hold a
+                # column at all.
+                if _accepts_column(annotation):
+                    bound.append(value)
+                    continue
                 parameter_name = "?" if parameter is None else parameter.name
                 raise ParseException(
                     f"Unsupported SQL expression {self.source!r}: parameter "

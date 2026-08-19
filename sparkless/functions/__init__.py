@@ -367,6 +367,7 @@ __all__ = [
     "desc_nulls_last",
     "input_file_name",
     "monotonically_increasing_id",
+    "uuid",
     "spark_partition_id",
     "broadcast",
     "column",
