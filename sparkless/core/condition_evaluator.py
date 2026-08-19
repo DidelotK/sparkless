@@ -278,6 +278,15 @@ class ConditionEvaluator:
         elif operation_type in ("struct", "named_struct"):
             return ConditionEvaluator._evaluate_struct_operation(row, operation)
 
+        # Higher-order array functions. Collected here rather than in the
+        # function whitelist below because each one needs the *row* to
+        # evaluate the expression its lambda builds, not just the already
+        # resolved value of its first operand. Absent from both tables, all
+        # four fell to the NULL fall-through -- and NULL is falsy, so a guard
+        # written on top of them answered "clean" for every input (#2419).
+        elif operation_type in ("exists", "forall", "filter", "transform"):
+            return ConditionEvaluator._evaluate_higher_order_operation(row, operation)
+
         # Cast operations
         elif operation_type == "cast":
             value = ConditionEvaluator._get_column_value(row, operation.column)
@@ -486,6 +495,47 @@ class ConditionEvaluator:
             operation_type,
         )
         return None
+
+    @staticmethod
+    def _evaluate_higher_order_operation(
+        row: Dict[str, Any], operation: ColumnOperation
+    ) -> Any:
+        """Evaluate ``exists`` / ``forall`` / ``filter`` / ``transform``.
+
+        The lambda is applied to each array element as a literal, and whatever
+        expression it builds is evaluated by this same evaluator -- so a
+        lambda body may use any function, exactly as in Spark.
+
+        Args:
+            row: The data row to evaluate against.
+            operation: The higher-order ``ColumnOperation``.
+
+        Returns:
+            The function's result, or NULL for a NULL array.
+        """
+        from .higher_order import (
+            element_applier,
+            exists_value,
+            filter_value,
+            forall_value,
+            transform_value,
+        )
+
+        col_value = ConditionEvaluator._get_column_value(row, operation.column)
+        if col_value is None:
+            return None
+
+        def evaluate(expression: Any) -> Any:
+            return ConditionEvaluator.evaluate_expression(row, expression)
+
+        apply = element_applier(operation.value, evaluate)
+        if operation.operation == "exists":
+            return exists_value(col_value, apply)
+        if operation.operation == "forall":
+            return forall_value(col_value, apply)
+        if operation.operation == "filter":
+            return filter_value(col_value, apply)
+        return transform_value(col_value, apply)
 
     @staticmethod
     def _evaluate_struct_operation(
@@ -1920,10 +1970,15 @@ class ConditionEvaluator:
             if isinstance(col_value, (list, tuple, dict)):
                 return len(col_value)  # type: ignore[return-value]
             return -1  # type: ignore[return-value]
-        elif operation_type == "transform":
+        elif operation_type in ("exists", "forall", "filter", "transform"):
+            # Same evaluation as the value path: a higher-order function used
+            # as a predicate (``df.filter(F.exists(...))``) must agree with the
+            # same expression projected. The local implementation this replaced
+            # called ``operation.value`` -- a MockLambdaExpression, which is not
+            # callable -- and so returned the input array unchanged.
             return cast(
                 "bool",
-                ConditionEvaluator._evaluate_transform_operation(col_value, operation),
+                ConditionEvaluator._evaluate_higher_order_operation(row, operation),
             )
 
         # Arithmetic operations
@@ -2756,36 +2811,3 @@ class ConditionEvaluator:
         if hasattr(upper, "value") and not isinstance(upper, (Column, ColumnOperation)):
             upper = upper.value
         return bool(lower <= col_value <= upper)
-
-    @staticmethod
-    def _evaluate_transform_operation(value: Any, operation: Any) -> Any:
-        """Evaluate transform operations for higher-order array functions.
-
-        Args:
-            value: The input value (array) to transform
-            operation: The ColumnOperation containing the transform operation
-
-        Returns:
-            The transformed array, or None if input is None
-        """
-        # Handle null input
-        if value is None:
-            return None
-
-        # Get the lambda function from the operation
-        lambda_expr = operation.value
-
-        # Apply the transform using Python lambda evaluation
-        try:
-            # If lambda_expr is callable, apply it directly
-            if callable(lambda_expr):
-                if isinstance(value, list):
-                    return [lambda_expr(x) for x in value]
-                else:
-                    return value
-            else:
-                # Return original value if lambda is not callable
-                return value
-        except Exception as e:
-            print(f"Warning: Failed to evaluate transform lambda: {e}")
-            return value  # Return original value if evaluation fails
